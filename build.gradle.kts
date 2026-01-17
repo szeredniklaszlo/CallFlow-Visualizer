@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.callflow"
-version = "1.0.1"
+version = "1.0.2"
 
 // Semantic Versioning: MAJOR.MINOR.PATCH
 // - MAJOR: 호환성 깨지는 변경
@@ -49,7 +49,7 @@ intellijPlatform {
 
         ideaVersion {
             sinceBuild = "241"
-            untilBuild = "252.*"
+            untilBuild = "253.*"
         }
     }
 

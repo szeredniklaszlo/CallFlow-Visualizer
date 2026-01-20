@@ -25,3 +25,4 @@ generated/
 
 # Test project (development only)
 testproject/
+.serena/

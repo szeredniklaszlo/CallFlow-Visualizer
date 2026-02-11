@@ -152,9 +152,11 @@ class MermaidExporter {
         // Add edges to callees
         node.callees.forEach { callee ->
             val calleeId = sanitizeId(callee.id)
+            val edgeProps = node.calleeEdgeProperties[callee.id]
             val edgeStyle = when {
                 callee.metadata.isAsync -> "-.->|async|"
                 callee.isCyclicRef -> "-.->|cycle|"
+                edgeProps?.isInsideLoop == true -> "==>|loop|"
                 else -> "-->"
             }
             edges.add("$nodeId $edgeStyle $calleeId")
@@ -190,8 +192,12 @@ class MermaidExporter {
             val toClass = sanitizeParticipant(callee.className)
             val method = callee.methodName
 
-            val asyncNote = if (callee.metadata.isAsync) " [async]" else ""
-            builder.appendLine("    $fromClass->>+$toClass: $method()$asyncNote")
+            val badges = callee.metadata.getBadges()
+            val badgeText = if (badges.isNotEmpty()) " ${badges.joinToString(" ") { "[$it]" }}" else ""
+            val edgeProps = node.calleeEdgeProperties[callee.id]
+            val loopNote = if (edgeProps?.isInsideLoop == true) " [LOOP]" else ""
+
+            builder.appendLine("    $fromClass->>+$toClass: $method()$badgeText$loopNote")
 
             generateSequence(callee, builder, visited, depth + 1)
 

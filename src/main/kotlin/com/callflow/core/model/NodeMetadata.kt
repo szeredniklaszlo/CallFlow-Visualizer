@@ -25,6 +25,9 @@ data class NodeMetadata(
     /** Whether the method is annotated with @Transactional */
     val isTransactional: Boolean = false,
 
+    /** Whether the @Transactional has readOnly = true */
+    val isReadOnlyTx: Boolean = false,
+
     /** Transaction propagation level */
     val transactionPropagation: TransactionPropagation = TransactionPropagation.NONE,
 
@@ -56,7 +59,13 @@ data class NodeMetadata(
     val lineNumber: Int = -1,
 
     /** File path for test detection */
-    val filePath: String? = null
+    val filePath: String? = null,
+
+    /** External call flags detected in method body (e.g., "MQ_SEND", "HTTP_CALL") */
+    val externalCallFlags: List<String> = emptyList(),
+
+    /** Warning flags for risky patterns (e.g., "FLUSH", "EAGER_FETCH") */
+    val warningFlags: List<String> = emptyList()
 ) {
     enum class Visibility {
         PUBLIC, PROTECTED, PACKAGE_PRIVATE, PRIVATE
@@ -76,8 +85,18 @@ data class NodeMetadata(
      */
     fun getBadges(): List<String> = buildList {
         if (isAsync) add("@Async")
-        if (isTransactional) add("@Tx")
+        if (isTransactional) {
+            when {
+                isReadOnlyTx -> add("@Tx(RO)")
+                transactionPropagation == TransactionPropagation.REQUIRES_NEW -> add("!TX(NEW)!")
+                else -> add("@Tx")
+            }
+        }
         httpMethod?.let { add(it) }
         if (eventClass != null) add("Event")
+        if ("MQ_SEND" in externalCallFlags) add("MQ Send")
+        if ("HTTP_CALL" in externalCallFlags) add("HTTP Call")
+        if ("FLUSH" in warningFlags) add("FLUSH!")
+        if ("EAGER_FETCH" in warningFlags) add("EAGER!")
     }
 }

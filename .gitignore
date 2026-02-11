@@ -1,6 +1,7 @@
 # Gradle
 .gradle/
 build/
+bin/
 !gradle/wrapper/gradle-wrapper.jar
 
 # IntelliJ Platform
@@ -26,3 +27,5 @@ generated/
 # Test project (development only)
 testproject/
 .serena/
+
+.agent/

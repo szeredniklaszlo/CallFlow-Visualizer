@@ -4,6 +4,14 @@ import com.intellij.psi.PsiElement
 import com.intellij.psi.PsiMethod
 
 /**
+ * Properties associated with a call edge (the relationship between caller and callee).
+ */
+data class EdgeProperties(
+    /** Whether this call occurs inside a loop (for, while, foreach) */
+    val isInsideLoop: Boolean = false
+)
+
+/**
  * Represents a single node in the call graph.
  * Each node corresponds to a method and contains navigation info plus call relationships.
  */
@@ -39,7 +47,10 @@ data class CallNode(
     val isCyclicRef: Boolean = false,
 
     /** Depth from the root node */
-    val depth: Int = 0
+    val depth: Int = 0,
+
+    /** Edge properties for calls to specific callees (keyed by callee ID) */
+    val calleeEdgeProperties: MutableMap<String, EdgeProperties> = mutableMapOf()
 ) {
     /** Full qualified class name */
     val qualifiedClassName: String
@@ -133,6 +144,11 @@ data class CallNode(
             } else {
                 TransactionPropagation.NONE
             }
+            val readOnly = if (isTransactional) {
+                extractReadOnly(method)
+            } else {
+                false
+            }
 
             // Extract file path for test detection
             val filePath = method.containingFile?.virtualFile?.path
@@ -140,6 +156,7 @@ data class CallNode(
             return NodeMetadata(
                 isAsync = annotations.any { it.contains("Async") },
                 isTransactional = isTransactional,
+                isReadOnlyTx = readOnly,
                 transactionPropagation = propagation,
                 httpMethod = extractHttpMethod(annotations),
                 httpPath = extractHttpPath(method),
@@ -177,6 +194,21 @@ data class CallNode(
                 }
             }
             return TransactionPropagation.REQUIRED
+        }
+
+        /**
+         * Extract readOnly attribute from @Transactional annotation.
+         */
+        private fun extractReadOnly(method: PsiMethod): Boolean {
+            for (annotation in method.annotations) {
+                val name = annotation.qualifiedName ?: continue
+                if (name.contains("Transactional")) {
+                    val readOnlyValue = annotation.findAttributeValue("readOnly")
+                    val readOnlyText = readOnlyValue?.text ?: return false
+                    return readOnlyText.contains("true", ignoreCase = true)
+                }
+            }
+            return false
         }
 
         private fun extractHttpMethod(annotations: List<String>): String? {

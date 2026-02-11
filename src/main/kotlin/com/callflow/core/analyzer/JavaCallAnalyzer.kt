@@ -2,6 +2,7 @@ package com.callflow.core.analyzer
 
 import com.callflow.core.model.CallGraph
 import com.callflow.core.model.CallNode
+import com.callflow.core.model.EdgeProperties
 import com.callflow.core.model.NodeType
 import com.intellij.openapi.application.ReadAction
 import com.intellij.openapi.diagnostic.Logger
@@ -25,6 +26,15 @@ class JavaCallAnalyzer(
 ) : CallAnalyzer {
 
     private val LOG = Logger.getInstance(JavaCallAnalyzer::class.java)
+    private val riskDetector = RiskPatternDetector(project)
+
+    /**
+     * Wraps a resolved PsiMethod with the call-site PSI element for context analysis.
+     */
+    private data class MethodCallInfo(
+        val method: PsiMethod,
+        val callSite: PsiElement
+    )
 
     override fun analyzeCallees(method: PsiMethod, depth: Int): CallNode {
         val visited = mutableSetOf<String>()
@@ -109,30 +119,53 @@ class JavaCallAnalyzer(
 
         visited.add(nodeId)
 
-        val node = CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
+        var node = CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
+
+        // Enrich metadata with risk patterns from method body
+        node = enrichNodeWithRiskPatterns(method, node)
 
         // Find method calls - handle both Java and Kotlin
         val calledMethods = findMethodCallsInMethod(method)
 
-        calledMethods.forEach { calledMethod ->
-            if (shouldIncludeMethod(calledMethod)) {
+        calledMethods.forEach { callInfo ->
+            if (shouldIncludeMethod(callInfo.method)) {
                 val childNode = analyzeCalleesInternal(
-                    calledMethod,
+                    callInfo.method,
                     maxDepth,
                     currentDepth + 1,
                     visited
                 )
                 node.callees.add(childNode)
 
+                // Check if this call is inside a loop and set edge properties
+                val isInLoop = riskDetector.isInsideLoop(callInfo.callSite)
+                if (isInLoop) {
+                    node.calleeEdgeProperties[childNode.id] = EdgeProperties(isInsideLoop = true)
+                }
+
+                // Also check for eager fetch on the called method
+                if (riskDetector.detectEagerFetching(callInfo.method)) {
+                    val updatedFlags = childNode.metadata.warningFlags.toMutableList()
+                    if ("EAGER_FETCH" !in updatedFlags) {
+                        updatedFlags.add("EAGER_FETCH")
+                    }
+                    val idx = node.callees.indexOf(childNode)
+                    if (idx >= 0) {
+                        node.callees[idx] = childNode.copy(
+                            metadata = childNode.metadata.copy(warningFlags = updatedFlags)
+                        )
+                    }
+                }
+
                 // If this is an interface method, add implementations as children of the interface node
-                if (config.resolveImplementations && calledMethod.containingClass?.isInterface == true) {
-                    val implementations = findOverridingMethods(calledMethod)
+                if (config.resolveImplementations && callInfo.method.containingClass?.isInterface == true) {
+                    val implementations = findOverridingMethods(callInfo.method)
                     implementations.forEach { implMethod ->
                         if (shouldIncludeMethod(implMethod)) {
                             val implNode = analyzeCalleesInternal(
                                 implMethod,
                                 maxDepth,
-                                currentDepth + 2,  // One level deeper than interface
+                                currentDepth + 2,
                                 visited
                             )
                             childNode.callees.add(implNode)
@@ -143,6 +176,45 @@ class JavaCallAnalyzer(
         }
 
         return node
+    }
+
+    /**
+     * Enrich a node's metadata with risk patterns detected in the method body.
+     * Returns a new node with enriched metadata.
+     */
+    private fun enrichNodeWithRiskPatterns(method: PsiMethod, node: CallNode): CallNode {
+        val externalFlags = mutableListOf<String>()
+        val warningFlags = mutableListOf<String>()
+
+        if (method is KtLightMethod) {
+            val ktFunction = method.kotlinOrigin
+            if (ktFunction is KtNamedFunction) {
+                ktFunction.bodyExpression?.let { body ->
+                    externalFlags.addAll(riskDetector.detectExternalCallsKotlin(body))
+                    if (riskDetector.detectFlushCallsKotlin(body)) {
+                        warningFlags.add("FLUSH")
+                    }
+                }
+            }
+        } else {
+            method.body?.let { body ->
+                externalFlags.addAll(riskDetector.detectExternalCalls(body))
+                if (riskDetector.detectFlushCalls(body)) {
+                    warningFlags.add("FLUSH")
+                }
+            }
+        }
+
+        return if (externalFlags.isNotEmpty() || warningFlags.isNotEmpty()) {
+            node.copy(
+                metadata = node.metadata.copy(
+                    externalCallFlags = node.metadata.externalCallFlags + externalFlags,
+                    warningFlags = node.metadata.warningFlags + warningFlags
+                )
+            )
+        } else {
+            node
+        }
     }
 
     /**
@@ -242,58 +314,57 @@ class JavaCallAnalyzer(
     /**
      * Find all method calls within a method body (Java or Kotlin).
      */
-    private fun findMethodCallsInMethod(method: PsiMethod): List<PsiMethod> {
-        val methods = mutableListOf<PsiMethod>()
+    private fun findMethodCallsInMethod(method: PsiMethod): List<MethodCallInfo> {
+        val calls = mutableListOf<MethodCallInfo>()
 
         // Check if this is a Kotlin Light method
         if (method is KtLightMethod) {
             val ktFunction = method.kotlinOrigin
             if (ktFunction is KtNamedFunction) {
-                methods.addAll(findKotlinMethodCalls(ktFunction))
-                return methods.distinctBy { CallNode.createId(it) }
+                calls.addAll(findKotlinMethodCalls(ktFunction))
+                return calls.distinctBy { CallNode.createId(it.method) }
             }
         }
 
         // Java method - use Java visitor
         method.body?.let { body ->
-            methods.addAll(findJavaMethodCalls(body))
+            calls.addAll(findJavaMethodCalls(body))
         }
 
-        return methods.distinctBy { CallNode.createId(it) }
+        return calls.distinctBy { CallNode.createId(it.method) }
     }
 
     /**
      * Find method calls in Java code.
      */
-    private fun findJavaMethodCalls(element: PsiElement): List<PsiMethod> {
-        val methods = mutableListOf<PsiMethod>()
+    private fun findJavaMethodCalls(element: PsiElement): List<MethodCallInfo> {
+        val calls = mutableListOf<MethodCallInfo>()
 
         element.accept(object : JavaRecursiveElementVisitor() {
             override fun visitMethodCallExpression(expression: PsiMethodCallExpression) {
                 super.visitMethodCallExpression(expression)
                 expression.resolveMethod()?.let { resolved ->
-                    methods.add(resolved)
-                    // Note: Implementations are added as children in analyzeCalleesInternal, not here
+                    calls.add(MethodCallInfo(resolved, expression))
                 }
             }
 
             override fun visitNewExpression(expression: PsiNewExpression) {
                 super.visitNewExpression(expression)
                 expression.resolveConstructor()?.let { constructor ->
-                    methods.add(constructor)
+                    calls.add(MethodCallInfo(constructor, expression))
                 }
             }
         })
 
-        return methods
+        return calls
     }
 
     /**
      * Find method calls in Kotlin code (K1/K2 compatible).
      * Note: Does NOT include implementations here - they're added as children in analyzeCalleesInternal
      */
-    private fun findKotlinMethodCalls(ktFunction: KtNamedFunction): List<PsiMethod> {
-        val methods = mutableListOf<PsiMethod>()
+    private fun findKotlinMethodCalls(ktFunction: KtNamedFunction): List<MethodCallInfo> {
+        val calls = mutableListOf<MethodCallInfo>()
 
         LOG.info("Analyzing Kotlin function: ${ktFunction.name}")
 
@@ -302,13 +373,13 @@ class JavaCallAnalyzer(
                 super.visitCallExpression(expression)
                 resolveKotlinCall(expression)?.let { resolved ->
                     LOG.info("Resolved call: ${expression.text} -> ${resolved.name}")
-                    methods.add(resolved)
+                    calls.add(MethodCallInfo(resolved, expression))
                 }
             }
         })
 
-        LOG.info("Found ${methods.size} method calls in ${ktFunction.name}")
-        return methods
+        LOG.info("Found ${calls.size} method calls in ${ktFunction.name}")
+        return calls
     }
 
     /**

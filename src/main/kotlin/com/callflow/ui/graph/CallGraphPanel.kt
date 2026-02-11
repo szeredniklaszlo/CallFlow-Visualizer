@@ -2,9 +2,11 @@ package com.callflow.ui.graph
 
 import com.callflow.core.model.CallNode
 import com.callflow.core.model.NodeType
+import com.callflow.core.model.TransactionPropagation
 import com.intellij.openapi.diagnostic.Logger
 import com.intellij.ui.JBColor
 import com.intellij.util.ui.JBUI
+import javax.swing.ToolTipManager
 import java.awt.*
 import java.awt.event.*
 import java.awt.geom.*
@@ -42,7 +44,7 @@ class CallGraphPanel : JPanel() {
 
     // Layout constants - Horizontal layout (left to right)
     private val nodeWidth = 200
-    private val nodeHeight = 60
+    private val nodeHeight = 80
     private val horizontalGap = 220  // Horizontal spacing between depth levels (increased)
     private val verticalGap = 100    // Vertical spacing between nodes at same depth (increased)
     private val minVerticalGap = 40  // Minimum absolute gap between nodes to prevent overlap
@@ -54,6 +56,10 @@ class CallGraphPanel : JPanel() {
     init {
         background = JBColor.background()
         isDoubleBuffered = true
+
+        // Enable tooltips
+        ToolTipManager.sharedInstance().registerComponent(this)
+        ToolTipManager.sharedInstance().initialDelay = 300
 
         // Mouse wheel for zoom
         addMouseWheelListener { e ->
@@ -419,14 +425,20 @@ class CallGraphPanel : JPanel() {
         val toX = edge.to.x
         val toY = edge.to.y + nodeHeight / 2
 
-        // Draw curved line
-        g2.color = JBColor.GRAY
-        g2.stroke = BasicStroke(2f)
+        // Check if this edge represents a call inside a loop
+        val isLoopEdge = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]?.isInsideLoop == true
+
+        // Draw curved line — thicker and darker for loop edges
+        g2.color = if (isLoopEdge) Color(0xE65100) else JBColor.GRAY  // Dark orange vs gray
+        g2.stroke = if (isLoopEdge) {
+            BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+        } else {
+            BasicStroke(2f)
+        }
 
         val path = Path2D.Double()
         path.moveTo(fromX.toDouble(), fromY.toDouble())
 
-        // Bezier curve for horizontal smoother edges
         val midX = (fromX + toX) / 2.0
         path.curveTo(
             midX, fromY.toDouble(),
@@ -435,7 +447,17 @@ class CallGraphPanel : JPanel() {
         )
         g2.draw(path)
 
+        // Draw loop indicator label
+        if (isLoopEdge) {
+            val labelX = midX.toInt() - 15
+            val labelY = ((fromY + toY) / 2) - 8
+            g2.color = Color(0xE65100)
+            g2.font = Font("SansSerif", Font.BOLD, 10)
+            g2.drawString("⟳ loop", labelX, labelY)
+        }
+
         // Draw arrow head (pointing right)
+        g2.color = if (isLoopEdge) Color(0xE65100) else JBColor.GRAY
         drawArrowHead(g2, toX, toY)
     }
 
@@ -454,20 +476,24 @@ class CallGraphPanel : JPanel() {
         val callNode = node.callNode
         val x = node.x
         val y = node.y
+        val metadata = callNode.metadata
 
         // Check if this is the root/starting node
         val isRootNode = callNode == rootNode
 
+        // Determine if this node has a dangerous TX + external call combo
+        val hasDangerCombo = metadata.isTransactional && metadata.externalCallFlags.isNotEmpty()
+
         // Node background color based on type
         val bgColor = if (isRootNode) {
-            Color(0xFFEBEE) // Light red background for root node
+            Color(0xFFEBEE)
         } else {
             getBackgroundColor(callNode.type)
         }
         val isSelected = node == selectedNode
         val isHovered = node == hoveredNode
 
-        // Draw shadow (larger for root node)
+        // Draw shadow
         g2.color = if (isRootNode) Color(200, 0, 0, 40) else Color(0, 0, 0, 30)
         g2.fillRoundRect(x + 3, y + 3, nodeWidth, nodeHeight, 10, 10)
 
@@ -475,47 +501,162 @@ class CallGraphPanel : JPanel() {
         g2.color = if (isSelected) bgColor.brighter() else bgColor
         g2.fillRoundRect(x, y, nodeWidth, nodeHeight, 10, 10)
 
-        // Draw border - RED for root node
-        g2.color = when {
-            isRootNode -> Color(0xE53935) // Red border for starting method
-            isSelected || isHovered -> JBColor.namedColor("Focus.borderColor", JBColor.BLUE)
-            else -> bgColor.darker()
+        // Draw border — red dashed for danger combo, red solid for root, default otherwise
+        when {
+            hasDangerCombo -> {
+                g2.color = Color(0xD32F2F) // Red
+                g2.stroke = BasicStroke(
+                    3f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND,
+                    10f, floatArrayOf(8f, 6f), 0f
+                )
+            }
+            isRootNode -> {
+                g2.color = Color(0xE53935)
+                g2.stroke = BasicStroke(4f)
+            }
+            isSelected || isHovered -> {
+                g2.color = JBColor.namedColor("Focus.borderColor", JBColor.BLUE)
+                g2.stroke = BasicStroke(3f)
+            }
+            else -> {
+                g2.color = bgColor.darker()
+                g2.stroke = BasicStroke(1.5f)
+            }
         }
-        g2.stroke = BasicStroke(if (isRootNode) 4f else if (isSelected || isHovered) 3f else 1.5f)
         g2.drawRoundRect(x, y, nodeWidth, nodeHeight, 10, 10)
 
-        // Draw type badge
+        // Draw type badge (top-left)
         val badgeColor = getBadgeColor(callNode.type)
         g2.color = badgeColor
-        g2.fillRoundRect(x + 5, y + 5, 80, 20, 6, 6)
+        g2.fillRoundRect(x + 5, y + 5, 80, 18, 6, 6)
         g2.color = Color.WHITE
-        g2.font = Font("SansSerif", Font.BOLD, 11)
-        g2.drawString(callNode.type.displayName, x + 10, y + 19)
+        g2.font = Font("SansSerif", Font.BOLD, 10)
+        g2.drawString(callNode.type.displayName, x + 10, y + 17)
 
         // Draw class name
         g2.color = JBColor.foreground()
-        g2.font = Font("SansSerif", Font.BOLD, 14)
+        g2.font = Font("SansSerif", Font.BOLD, 13)
         val className = truncateText(g2, callNode.className, nodeWidth - 15)
-        g2.drawString(className, x + 8, y + 40)
+        g2.drawString(className, x + 8, y + 37)
 
         // Draw method name
         g2.color = JBColor.GRAY
-        g2.font = Font("SansSerif", Font.PLAIN, 12)
+        g2.font = Font("SansSerif", Font.PLAIN, 11)
         val methodName = truncateText(g2, ".${callNode.methodName}()", nodeWidth - 15)
-        g2.drawString(methodName, x + 8, y + 55)
+        g2.drawString(methodName, x + 8, y + 50)
+
+        // Draw annotation/risk badges row (bottom area)
+        drawAnnotationBadges(g2, x, y, metadata)
 
         // Draw cycle indicator
         if (callNode.isCyclicRef) {
             g2.color = JBColor.ORANGE
             g2.font = Font("SansSerif", Font.BOLD, 12)
-            g2.drawString("\u21BB", x + nodeWidth - 20, y + 19)
+            g2.drawString("\u21BB", x + nodeWidth - 20, y + 17)
         }
 
         // Draw START indicator for root node
         if (isRootNode) {
-            g2.color = Color(0xE53935) // Red
-            g2.font = Font("SansSerif", Font.BOLD, 11)
-            g2.drawString("★ START", x + nodeWidth - 70, y + 19)
+            g2.color = Color(0xE53935)
+            g2.font = Font("SansSerif", Font.BOLD, 10)
+            g2.drawString("★ START", x + nodeWidth - 65, y + 17)
+        }
+    }
+
+    /**
+     * Draw colored annotation/risk badges in a row at the bottom of a node.
+     */
+    private fun drawAnnotationBadges(g2: Graphics2D, x: Int, y: Int, metadata: com.callflow.core.model.NodeMetadata) {
+        val badges = mutableListOf<Pair<String, Color>>()
+
+        // Transaction badges
+        if (metadata.isTransactional) {
+            when {
+                metadata.isReadOnlyTx -> badges.add("@Tx(RO)" to Color(0x4CAF50))  // Green
+                metadata.transactionPropagation == TransactionPropagation.REQUIRES_NEW ->
+                    badges.add("!TX(NEW)!" to Color(0xD32F2F))  // Bright red
+                else -> badges.add("@Tx" to Color(0x1976D2))  // Blue
+            }
+        }
+
+        // Async badge
+        if (metadata.isAsync) badges.add("@Async" to Color(0x7B1FA2))  // Purple
+
+        // External call badges
+        if ("MQ_SEND" in metadata.externalCallFlags) badges.add("MQ Send" to Color(0xE65100))  // Deep orange
+        if ("HTTP_CALL" in metadata.externalCallFlags) badges.add("HTTP Call" to Color(0x6A1B9A))  // Deep purple
+
+        // Warning badges
+        if ("FLUSH" in metadata.warningFlags) badges.add("FLUSH!" to Color(0xF9A825))  // Amber
+        if ("EAGER_FETCH" in metadata.warningFlags) badges.add("EAGER!" to Color(0xF9A825))  // Amber
+
+        // HTTP method badge
+        metadata.httpMethod?.let { badges.add(it to Color(0x00838F))  }
+
+        if (badges.isEmpty()) return
+
+        // Draw badges in a row at y + 56
+        var badgeX = x + 5
+        val badgeY = y + 58
+        g2.font = Font("SansSerif", Font.BOLD, 9)
+        val fm = g2.fontMetrics
+
+        for ((text, color) in badges) {
+            val textWidth = fm.stringWidth(text)
+            val badgeWidth = textWidth + 8
+
+            // Don't overflow the node
+            if (badgeX + badgeWidth > x + nodeWidth - 5) break
+
+            g2.color = color
+            g2.fillRoundRect(badgeX, badgeY, badgeWidth, 16, 4, 4)
+            g2.color = Color.WHITE
+            g2.drawString(text, badgeX + 4, badgeY + 12)
+
+            badgeX += badgeWidth + 3
+        }
+    }
+
+    /**
+     * Returns context-sensitive tooltip text based on hovered node.
+     */
+    override fun getToolTipText(event: MouseEvent): String? {
+        val node = findNodeAt(event.point) ?: return null
+        val metadata = node.callNode.metadata
+        val tips = mutableListOf<String>()
+
+        if (metadata.isTransactional) {
+            when {
+                metadata.isReadOnlyTx ->
+                    tips.add("Read-only transaction: no write locks acquired. Safe for reads.")
+                metadata.transactionPropagation == TransactionPropagation.REQUIRES_NEW ->
+                    tips.add("⚠️ REQUIRES_NEW: Opens a new transaction. Can cause deadlocks if the calling transaction holds locks on the same data.")
+                else ->
+                    tips.add("Standard transaction (REQUIRED propagation).")
+            }
+        }
+
+        if (metadata.isTransactional && metadata.externalCallFlags.isNotEmpty()) {
+            tips.add("🔴 DANGER: Holding DB locks during external I/O. This blocks other transactions and risks distributed deadlocks.")
+        }
+
+        if ("MQ_SEND" in metadata.externalCallFlags) {
+            tips.add("Sends messages to a message queue (Kafka/RabbitMQ).")
+        }
+        if ("HTTP_CALL" in metadata.externalCallFlags) {
+            tips.add("Makes HTTP calls to external services (REST/Feign).")
+        }
+        if ("FLUSH" in metadata.warningFlags) {
+            tips.add("⚠️ saveAndFlush() acquires locks immediately instead of deferring to TX commit.")
+        }
+        if ("EAGER_FETCH" in metadata.warningFlags) {
+            tips.add("⚠️ EAGER fetch on @...ToMany can cause hidden N+1 queries and acquire more locks than expected.")
+        }
+
+        return if (tips.isNotEmpty()) {
+            "<html>${tips.joinToString("<br>")}</html>"
+        } else {
+            "${node.callNode.displayName} (${node.callNode.type.displayName})"
         }
     }
 

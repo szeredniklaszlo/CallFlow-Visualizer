@@ -42,6 +42,9 @@ class CallGraphPanel : JPanel() {
     private var hideEntities: Boolean = false
     private var hideTestCode: Boolean = true  // Default: hide test code
 
+    // Critical path highlighting (Feature 8)
+    private var criticalPath: Set<String> = emptySet()
+
     // Layout constants - Horizontal layout (left to right)
     private val nodeWidth = 200
     private val nodeHeight = 80
@@ -412,6 +415,11 @@ class CallGraphPanel : JPanel() {
         // Draw zoom indicator
         drawZoomIndicator(g2)
 
+        // Draw legend (screen-space, bottom-right)
+        if (graphNodes.isNotEmpty()) {
+            drawLegend(g2)
+        }
+
         // Draw instructions if no graph
         if (graphNodes.isEmpty()) {
             drawPlaceholder(g2)
@@ -425,20 +433,33 @@ class CallGraphPanel : JPanel() {
         val toX = edge.to.x
         val toY = edge.to.y + nodeHeight / 2
 
-        // Check if this edge represents a call inside a loop
+        // Check edge properties
         val isLoopEdge = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]?.isInsideLoop == true
+        val isCriticalEdge = edge.from.callNode.id in criticalPath && edge.to.callNode.id in criticalPath
 
-        // Draw curved line — thicker and darker for loop edges
-        g2.color = if (isLoopEdge) Color(0xE65100) else JBColor.GRAY  // Dark orange vs gray
-        g2.stroke = if (isLoopEdge) {
-            BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
-        } else {
-            BasicStroke(2f)
+        // Edge line style — combines properties (critical+loop = thickest)
+        when {
+            isCriticalEdge && isLoopEdge -> {
+                g2.color = Color(0xB71C1C)  // Dark red
+                g2.stroke = BasicStroke(5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            }
+            isCriticalEdge -> {
+                g2.color = Color(0xB71C1C)
+                g2.stroke = BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            }
+            isLoopEdge -> {
+                g2.color = Color(0xE65100)  // Dark orange
+                g2.stroke = BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            }
+            else -> {
+                g2.color = JBColor.GRAY
+                g2.stroke = BasicStroke(2f)
+            }
         }
 
+        // Draw the curved path
         val path = Path2D.Double()
         path.moveTo(fromX.toDouble(), fromY.toDouble())
-
         val midX = (fromX + toX) / 2.0
         path.curveTo(
             midX, fromY.toDouble(),
@@ -447,18 +468,76 @@ class CallGraphPanel : JPanel() {
         )
         g2.draw(path)
 
-        // Draw loop indicator label
-        if (isLoopEdge) {
-            val labelX = midX.toInt() - 15
-            val labelY = ((fromY + toY) / 2) - 8
-            g2.color = Color(0xE65100)
-            g2.font = Font("SansSerif", Font.BOLD, 10)
-            g2.drawString("⟳ loop", labelX, labelY)
+        // ---- Edge labels (stacked vertically, both can appear) ----
+        val labelX = midX.toInt() - 20
+        var labelY = ((fromY + toY) / 2) - 14
+        g2.font = Font("SansSerif", Font.BOLD, 10)
+
+        if (isCriticalEdge) {
+            g2.color = Color(0xB71C1C)
+            g2.drawString("\u26A0 RISK", labelX, labelY)
+            labelY += 14
         }
 
-        // Draw arrow head (pointing right)
-        g2.color = if (isLoopEdge) Color(0xE65100) else JBColor.GRAY
+        if (isLoopEdge) {
+            g2.color = Color(0xE65100)
+            g2.drawString("\u27F3 loop", labelX, labelY)
+            labelY += 14
+        }
+
+        // Cumulative risk score on the target node
+        val targetRisk = computeNodeRiskScore(edge.to.callNode)
+        if (targetRisk > 0) {
+            // Draw risk score pill
+            val scoreText = "R:$targetRisk"
+            val fm = g2.fontMetrics
+            val tw = fm.stringWidth(scoreText)
+            val pillW = tw + 8
+            val pillH = 14
+            val pillX = labelX
+            val pillY = labelY - pillH + 3
+
+            val pillColor = when {
+                targetRisk >= 15 -> Color(0xB71C1C)  // Dark red
+                targetRisk >= 10 -> Color(0xD32F2F)  // Red
+                targetRisk >= 5  -> Color(0xE65100)  // Deep orange
+                else             -> Color(0xF9A825)  // Amber
+            }
+            g2.color = pillColor
+            g2.fillRoundRect(pillX, pillY, pillW, pillH, 4, 4)
+            g2.color = Color.WHITE
+            g2.drawString(scoreText, pillX + 4, pillY + 11)
+        }
+
+        // Arrow head — color reflects highest-priority property
+        g2.color = when {
+            isCriticalEdge -> Color(0xB71C1C)
+            isLoopEdge -> Color(0xE65100)
+            else -> JBColor.GRAY
+        }
         drawArrowHead(g2, toX, toY)
+    }
+
+    /**
+     * Compute the cumulative risk score for a single node based on its flags.
+     */
+    private fun computeNodeRiskScore(node: CallNode): Int {
+        var score = 0
+        val meta = node.metadata
+
+        for (flag in meta.warningFlags) {
+            score += com.callflow.core.model.RiskWarning.RISK_SCORES.getOrDefault(flag, 0)
+        }
+        for (flag in meta.externalCallFlags) {
+            if (meta.isTransactional) {
+                score += com.callflow.core.model.RiskWarning.RISK_SCORES.getOrDefault(flag, 0)
+            }
+        }
+        if (meta.isTransactional && meta.transactionPropagation == TransactionPropagation.REQUIRES_NEW) {
+            score += com.callflow.core.model.RiskWarning.RISK_SCORES.getOrDefault("REQUIRES_NEW_IN_TX", 0)
+        }
+
+        return score
     }
 
     private fun drawArrowHead(g2: Graphics2D, x: Int, y: Int) {
@@ -589,6 +668,9 @@ class CallGraphPanel : JPanel() {
         // Warning badges
         if ("FLUSH" in metadata.warningFlags) badges.add("FLUSH!" to Color(0xF9A825))  // Amber
         if ("EAGER_FETCH" in metadata.warningFlags) badges.add("EAGER!" to Color(0xF9A825))  // Amber
+        if ("TABLE_SCAN_RISK" in metadata.warningFlags) badges.add("\u2620 TABLE SCAN!" to Color(0x8B0000))  // Dark red
+        if ("CASCADE_OPERATION" in metadata.warningFlags) badges.add("CASCADE" to Color(0xBF360C))  // Deep dark orange
+        if ("EARLY_INSERT_LOCK" in metadata.warningFlags) badges.add("\u26A1 EARLY LOCK" to Color(0xC62828))  // Red
 
         // HTTP method badge
         metadata.httpMethod?.let { badges.add(it to Color(0x00838F))  }
@@ -652,6 +734,15 @@ class CallGraphPanel : JPanel() {
         if ("EAGER_FETCH" in metadata.warningFlags) {
             tips.add("⚠️ EAGER fetch on @...ToMany can cause hidden N+1 queries and acquire more locks than expected.")
         }
+        if ("TABLE_SCAN_RISK" in metadata.warningFlags) {
+            tips.add("☠️ TABLE SCAN: This query's WHERE clause likely uses a non-indexed column, which can cause a full table scan and lock the entire table, leading to severe deadlocks.")
+        }
+        if ("CASCADE_OPERATION" in metadata.warningFlags) {
+            tips.add("⚠️ CASCADE: This operation triggers cascade actions on related entities, potentially causing many 'hidden' database operations and locks.")
+        }
+        if ("EARLY_INSERT_LOCK" in metadata.warningFlags) {
+            tips.add("⚡ EARLY LOCK: This entity uses IDENTITY ID generation. save() triggers an immediate INSERT acquiring a DB lock, not at the end of the transaction.")
+        }
 
         return if (tips.isNotEmpty()) {
             "<html>${tips.joinToString("<br>")}</html>"
@@ -708,6 +799,110 @@ class CallGraphPanel : JPanel() {
         g2.drawString("Scroll: Zoom | Drag: Pan | Click: Navigate", 10, height - 25)
     }
 
+    /**
+     * Draw a legend panel in the bottom-right corner (screen-space).
+     * Explains node colors, edge styles, and badge meanings.
+     */
+    private fun drawLegend(g2: Graphics2D) {
+        val legendItems = listOf(
+            // Node frame colors
+            LegendItem(LegendIcon.RECT, Color(0xE53935), "★ Start node (red border)"),
+            LegendItem(LegendIcon.RECT_DASHED, Color(0xD32F2F), "TX + External I/O (red dashed)"),
+            LegendItem(LegendIcon.RECT, Color(0xE3F2FD).darker(), "Controller"),
+            LegendItem(LegendIcon.RECT, Color(0xE8F5E9).darker(), "Service"),
+            LegendItem(LegendIcon.RECT, Color(0xFFF3E0).darker(), "Repository"),
+            LegendItem(LegendIcon.RECT, Color(0xF3E5F5).darker(), "Entity"),
+            // Edge styles
+            LegendItem(LegendIcon.LINE, JBColor.GRAY, "Normal call"),
+            LegendItem(LegendIcon.LINE_THICK, Color(0xE65100), "\u27F3 Loop-enclosed call"),
+            LegendItem(LegendIcon.LINE_THICK, Color(0xB71C1C), "\u26A0 Critical path edge"),
+            // Badges
+            LegendItem(LegendIcon.BADGE, Color(0x1976D2), "@Tx — Standard transaction"),
+            LegendItem(LegendIcon.BADGE, Color(0x4CAF50), "@Tx(RO) — Read-only"),
+            LegendItem(LegendIcon.BADGE, Color(0xD32F2F), "!TX(NEW)! — REQUIRES_NEW"),
+            LegendItem(LegendIcon.BADGE, Color(0xF9A825), "FLUSH! / EAGER!"),
+            LegendItem(LegendIcon.BADGE, Color(0x8B0000), "\u2620 TABLE SCAN!"),
+            LegendItem(LegendIcon.BADGE, Color(0xBF360C), "CASCADE"),
+            LegendItem(LegendIcon.BADGE, Color(0xC62828), "\u26A1 EARLY LOCK"),
+            // Risk score pill
+            LegendItem(LegendIcon.PILL, Color(0xD32F2F), "R:N — Cumulative risk score")
+        )
+
+        val itemHeight = 16
+        val padding = 10
+        val legendWidth = 230
+        val legendHeight = legendItems.size * itemHeight + padding * 2 + 18  // +18 for title
+        val legendX = width - legendWidth - 12
+        val legendY = height - legendHeight - 40
+
+        // Semi-transparent background
+        g2.color = Color(
+            JBColor.background().red, JBColor.background().green,
+            JBColor.background().blue, 220
+        )
+        g2.fillRoundRect(legendX, legendY, legendWidth, legendHeight, 8, 8)
+        g2.color = JBColor.border()
+        g2.stroke = BasicStroke(1f)
+        g2.drawRoundRect(legendX, legendY, legendWidth, legendHeight, 8, 8)
+
+        // Title
+        g2.color = JBColor.foreground()
+        g2.font = Font("SansSerif", Font.BOLD, 11)
+        g2.drawString("Legend", legendX + padding, legendY + padding + 10)
+
+        // Items
+        g2.font = Font("SansSerif", Font.PLAIN, 10)
+        var y = legendY + padding + 24
+
+        for (item in legendItems) {
+            val iconX = legendX + padding
+            val iconY = y - 8
+
+            when (item.icon) {
+                LegendIcon.RECT -> {
+                    g2.color = item.color
+                    g2.stroke = BasicStroke(2f)
+                    g2.drawRoundRect(iconX, iconY, 14, 10, 3, 3)
+                }
+                LegendIcon.RECT_DASHED -> {
+                    g2.color = item.color
+                    g2.stroke = BasicStroke(2f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND, 10f, floatArrayOf(4f, 3f), 0f)
+                    g2.drawRoundRect(iconX, iconY, 14, 10, 3, 3)
+                }
+                LegendIcon.LINE -> {
+                    g2.color = item.color
+                    g2.stroke = BasicStroke(2f)
+                    g2.drawLine(iconX, iconY + 5, iconX + 14, iconY + 5)
+                }
+                LegendIcon.LINE_THICK -> {
+                    g2.color = item.color
+                    g2.stroke = BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                    g2.drawLine(iconX, iconY + 5, iconX + 14, iconY + 5)
+                }
+                LegendIcon.BADGE -> {
+                    g2.color = item.color
+                    g2.fillRoundRect(iconX, iconY, 14, 10, 3, 3)
+                }
+                LegendIcon.PILL -> {
+                    g2.color = item.color
+                    g2.fillRoundRect(iconX, iconY, 14, 10, 4, 4)
+                    g2.color = Color.WHITE
+                    g2.font = Font("SansSerif", Font.BOLD, 7)
+                    g2.drawString("R", iconX + 4, iconY + 8)
+                    g2.font = Font("SansSerif", Font.PLAIN, 10)
+                }
+            }
+
+            g2.color = JBColor.foreground()
+            g2.drawString(item.label, iconX + 20, y)
+            y += itemHeight
+        }
+    }
+
+    private data class LegendItem(val icon: LegendIcon, val color: Color, val label: String)
+
+    private enum class LegendIcon { RECT, RECT_DASHED, LINE, LINE_THICK, BADGE, PILL }
+
     private fun drawPlaceholder(g2: Graphics2D) {
         g2.color = JBColor.GRAY
         g2.font = Font("SansSerif", Font.PLAIN, 14)
@@ -755,6 +950,33 @@ class CallGraphPanel : JPanel() {
             buildGraphLayout()
             repaint()
         }
+    }
+
+    /**
+     * Set the critical path for highlighting.
+     */
+    fun setCriticalPath(path: List<String>) {
+        this.criticalPath = path.toSet()
+        repaint()
+    }
+
+    /**
+     * Highlight and scroll to a specific node by its ID.
+     * Used by the WarningListPanel when a warning is clicked.
+     */
+    fun highlightNode(nodeId: String) {
+        val targetGraphNode = graphNodes.find { it.callNode.id == nodeId } ?: return
+
+        // Select the node
+        selectedNode = targetGraphNode
+
+        // Scroll to center the node in the viewport
+        val centerX = width / 2.0
+        val centerY = height / 2.0
+        offsetX = centerX - targetGraphNode.x * scale
+        offsetY = centerY - targetGraphNode.y * scale
+
+        repaint()
     }
 
     /**

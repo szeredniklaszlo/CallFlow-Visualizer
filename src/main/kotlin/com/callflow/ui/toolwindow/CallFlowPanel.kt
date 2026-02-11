@@ -1,9 +1,11 @@
 package com.callflow.ui.toolwindow
 
 import com.callflow.core.analyzer.AnalysisConfig
+import com.callflow.core.analyzer.CriticalPathAnalyzer
 import com.callflow.core.analyzer.JavaCallAnalyzer
 import com.callflow.core.model.CallGraph
 import com.callflow.ui.graph.CallGraphPanel
+import com.callflow.ui.warnings.WarningListPanel
 import com.callflow.ui.tree.CallTreeView
 import com.intellij.icons.AllIcons
 import com.intellij.openapi.Disposable
@@ -48,6 +50,7 @@ class CallFlowPanel(
     private val directionComboBox = ComboBox(arrayOf("Both", "Callers Only", "Callees Only"))
     private val hideEntitiesCheckbox = JCheckBox("Hide Entities", false)
     private val hideTestCodeCheckbox = JCheckBox("Hide Test Code", true)  // Default: hide test code
+    private val warningPanel = WarningListPanel()
 
     // State
     private var currentGraph: CallGraph? = null
@@ -61,6 +64,12 @@ class CallFlowPanel(
         setupUI()
         // Initialize graph panel with default filter settings
         graphPanel.setHideTestCode(hideTestCodeCheckbox.isSelected)
+        // Wire warning panel click to graph node highlighting
+        warningPanel.onWarningClicked = { nodeId ->
+            graphPanel.highlightNode(nodeId)
+            // Switch to graph tab
+            tabbedPane.selectedIndex = 0
+        }
     }
 
     /**
@@ -111,8 +120,16 @@ class CallFlowPanel(
                 add(fitButton!!)
                 add(resetButton)
             }
+
+            // Graph + Warning panel in a splitter
+            val graphSplitter = JBSplitter(false, 0.75f).apply {
+                firstComponent = graphPanel
+                secondComponent = warningPanel
+                dividerWidth = 3
+            }
+
             add(zoomToolbar, BorderLayout.NORTH)
-            add(graphPanel, BorderLayout.CENTER)
+            add(graphSplitter, BorderLayout.CENTER)
         }
 
         // Tabbed pane
@@ -221,8 +238,17 @@ class CallFlowPanel(
                     }
                 }
 
+                // Post-processing: compute risk warnings and critical path (Feature 8)
+                val criticalPathAnalyzer = CriticalPathAnalyzer()
+                val riskWarnings = criticalPathAnalyzer.computeRiskWarnings(graph.root)
+                val criticalPath = criticalPathAnalyzer.findCriticalPath(graph.root)
+                val enrichedGraph = graph.copy(
+                    riskWarnings = riskWarnings,
+                    criticalPath = criticalPath
+                )
+
                 ApplicationManager.getApplication().invokeLater {
-                    updateUI(graph)
+                    updateUI(enrichedGraph)
                 }
             }
 
@@ -238,14 +264,18 @@ class CallFlowPanel(
         currentGraph = graph
         treeView.setRoot(graph.root)
         graphPanel.setRoot(graph.root)
+        graphPanel.setCriticalPath(graph.criticalPath)
+        warningPanel.setWarnings(graph.riskWarnings)
         exportButton?.isEnabled = true
 
         val stats = graph.getStatistics()
+        val warningCount = graph.riskWarnings.size
         statusLabel.text = buildString {
             append("${graph.root.displayName} | ")
             append("${stats.totalNodes} nodes | ")
             append("Callers: ${stats.callerCount} | ")
             append("Callees: ${stats.calleeCount} | ")
+            if (warningCount > 0) append("⚠ $warningCount warnings | ")
             append("${graph.analysisTimeMs}ms")
             if (graph.isTruncated) append(" (truncated)")
         }

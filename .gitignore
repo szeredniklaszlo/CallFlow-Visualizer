@@ -25,7 +25,6 @@ build/idea-sandbox/
 generated/
 
 # Test project (development only)
-testproject/
 .serena/
 
 .agent/

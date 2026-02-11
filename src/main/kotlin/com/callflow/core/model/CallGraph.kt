@@ -23,7 +23,13 @@ data class CallGraph(
     val isTruncated: Boolean = false,
 
     /** Warning messages from analysis */
-    val warnings: List<String> = emptyList()
+    val warnings: List<String> = emptyList(),
+
+    /** Structured risk warnings detected across all nodes */
+    val riskWarnings: List<RiskWarning> = emptyList(),
+
+    /** Node IDs forming the highest-risk path through the graph */
+    val criticalPath: List<String> = emptyList()
 ) {
     enum class AnalysisDirection {
         CALLERS_ONLY,    // Only upstream (who calls this)

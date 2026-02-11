@@ -98,5 +98,8 @@ data class NodeMetadata(
         if ("HTTP_CALL" in externalCallFlags) add("HTTP Call")
         if ("FLUSH" in warningFlags) add("FLUSH!")
         if ("EAGER_FETCH" in warningFlags) add("EAGER!")
+        if ("TABLE_SCAN_RISK" in warningFlags) add("\u2620 TABLE SCAN!")
+        if ("CASCADE_OPERATION" in warningFlags) add("CASCADE")
+        if ("EARLY_INSERT_LOCK" in warningFlags) add("\u26A1 EARLY LOCK")
     }
 }

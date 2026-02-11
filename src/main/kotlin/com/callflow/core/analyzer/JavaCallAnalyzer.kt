@@ -37,40 +37,44 @@ class JavaCallAnalyzer(
     )
 
     override fun analyzeCallees(method: PsiMethod, depth: Int): CallNode {
-        val visited = mutableSetOf<String>()
+        val ancestorStack = mutableSetOf<String>()
+        var expandedCount = 0
         val startTime = System.currentTimeMillis()
 
         return ReadAction.compute<CallNode, Exception> {
-            analyzeCalleesInternal(method, depth, 0, visited)
+            analyzeCalleesInternal(method, depth, 0, ancestorStack, { expandedCount++ ; expandedCount })
         }.also {
             LOG.info("Callee analysis completed in ${System.currentTimeMillis() - startTime}ms, " +
-                    "visited ${visited.size} nodes")
+                    "expanded $expandedCount nodes")
         }
     }
 
     override fun analyzeCallers(method: PsiMethod, depth: Int): CallNode {
-        val visited = mutableSetOf<String>()
+        val ancestorStack = mutableSetOf<String>()
+        var expandedCount = 0
         val startTime = System.currentTimeMillis()
 
         return ReadAction.compute<CallNode, Exception> {
-            analyzeCallersInternal(method, depth, 0, visited)
+            analyzeCallersInternal(method, depth, 0, ancestorStack, { expandedCount++ ; expandedCount })
         }.also {
             LOG.info("Caller analysis completed in ${System.currentTimeMillis() - startTime}ms, " +
-                    "visited ${visited.size} nodes")
+                    "expanded $expandedCount nodes")
         }
     }
 
     override fun analyzeBidirectional(method: PsiMethod, depth: Int): CallGraph {
         val startTime = System.currentTimeMillis()
-        val visitedCallees = mutableSetOf<String>()
-        val visitedCallers = mutableSetOf<String>()
+        val calleeAncestors = mutableSetOf<String>()
+        val callerAncestors = mutableSetOf<String>()
+        var calleeExpanded = 0
+        var callerExpanded = 0
 
         val rootWithCallees = ReadAction.compute<CallNode, Exception> {
-            analyzeCalleesInternal(method, depth, 0, visitedCallees)
+            analyzeCalleesInternal(method, depth, 0, calleeAncestors, { calleeExpanded++ ; calleeExpanded })
         }
 
         val rootWithCallers = ReadAction.compute<CallNode, Exception> {
-            analyzeCallersInternal(method, depth, 0, visitedCallers)
+            analyzeCallersInternal(method, depth, 0, callerAncestors, { callerExpanded++ ; callerExpanded })
         }
 
         // Merge both analyses into a single root node
@@ -78,7 +82,7 @@ class JavaCallAnalyzer(
             callers = rootWithCallers.callers.toMutableList()
         )
 
-        val totalNodes = visitedCallees.size + visitedCallers.size - 1
+        val totalNodes = calleeExpanded + callerExpanded - 1
         val analysisTime = System.currentTimeMillis() - startTime
 
         return CallGraph(
@@ -93,17 +97,21 @@ class JavaCallAnalyzer(
 
     /**
      * Internal recursive callee analysis.
+     * Uses an ancestor stack for correct directed-graph cycle detection:
+     * a cycle exists only when the CURRENT recursion path revisits a node (A→B→C→A),
+     * not when a node is reached via different independent paths (diamond pattern).
      */
     private fun analyzeCalleesInternal(
         method: PsiMethod,
         maxDepth: Int,
         currentDepth: Int,
-        visited: MutableSet<String>
+        ancestorStack: MutableSet<String>,
+        incrementExpanded: () -> Int
     ): CallNode {
         val nodeId = CallNode.createId(method)
 
-        // Check for cycles
-        if (nodeId in visited) {
+        // True directed cycle: this node is already on the current recursion path
+        if (nodeId in ancestorStack) {
             return createCyclicRefNode(method, currentDepth)
         }
 
@@ -113,11 +121,12 @@ class JavaCallAnalyzer(
         }
 
         // Check node limit
-        if (visited.size >= config.maxNodes) {
+        if (incrementExpanded() > config.maxNodes) {
             return CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
         }
 
-        visited.add(nodeId)
+        // Push onto ancestor stack (will be removed after recursion)
+        ancestorStack.add(nodeId)
 
         var node = CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
 
@@ -133,7 +142,8 @@ class JavaCallAnalyzer(
                     callInfo.method,
                     maxDepth,
                     currentDepth + 1,
-                    visited
+                    ancestorStack,
+                    incrementExpanded
                 )
                 node.callees.add(childNode)
 
@@ -143,12 +153,45 @@ class JavaCallAnalyzer(
                     node.calleeEdgeProperties[childNode.id] = EdgeProperties(isInsideLoop = true)
                 }
 
-                // Also check for eager fetch on the called method
+                // Enrich callee node with JPA-level risk detections
+                val additionalWarnings = mutableListOf<String>()
+
+                // Eager fetch detection
                 if (riskDetector.detectEagerFetching(callInfo.method)) {
-                    val updatedFlags = childNode.metadata.warningFlags.toMutableList()
-                    if ("EAGER_FETCH" !in updatedFlags) {
-                        updatedFlags.add("EAGER_FETCH")
+                    if ("EAGER_FETCH" !in childNode.metadata.warningFlags) {
+                        additionalWarnings.add("EAGER_FETCH")
                     }
+                }
+
+                // Table scan risk detection (Feature 5)
+                if (riskDetector.detectTableScanRisk(callInfo.method)) {
+                    if ("TABLE_SCAN_RISK" !in childNode.metadata.warningFlags) {
+                        additionalWarnings.add("TABLE_SCAN_RISK")
+                    }
+                }
+
+                // Cascade operation detection (Feature 6) — on save/delete calls
+                val calledName = callInfo.method.name
+                if (calledName in listOf("save", "saveAll", "delete", "deleteAll", "deleteById", "saveAndFlush")) {
+                    if (riskDetector.detectCascadeOperations(callInfo.method)) {
+                        if ("CASCADE_OPERATION" !in childNode.metadata.warningFlags) {
+                            additionalWarnings.add("CASCADE_OPERATION")
+                        }
+                    }
+
+                    // Early INSERT lock detection (Feature 7) — on save calls only
+                    if (calledName in listOf("save", "saveAll", "saveAndFlush")) {
+                        if (riskDetector.detectEarlyInsertLock(callInfo.method)) {
+                            if ("EARLY_INSERT_LOCK" !in childNode.metadata.warningFlags) {
+                                additionalWarnings.add("EARLY_INSERT_LOCK")
+                            }
+                        }
+                    }
+                }
+
+                // Apply all additional warnings at once
+                if (additionalWarnings.isNotEmpty()) {
+                    val updatedFlags = childNode.metadata.warningFlags + additionalWarnings
                     val idx = node.callees.indexOf(childNode)
                     if (idx >= 0) {
                         node.callees[idx] = childNode.copy(
@@ -166,7 +209,8 @@ class JavaCallAnalyzer(
                                 implMethod,
                                 maxDepth,
                                 currentDepth + 2,
-                                visited
+                                ancestorStack,
+                                incrementExpanded
                             )
                             childNode.callees.add(implNode)
                         }
@@ -174,6 +218,9 @@ class JavaCallAnalyzer(
                 }
             }
         }
+
+        // Pop from ancestor stack — allow other branches to visit this node
+        ancestorStack.remove(nodeId)
 
         return node
     }
@@ -219,17 +266,19 @@ class JavaCallAnalyzer(
 
     /**
      * Internal recursive caller analysis.
+     * Uses ancestor stack for correct directed-graph cycle detection.
      */
     private fun analyzeCallersInternal(
         method: PsiMethod,
         maxDepth: Int,
         currentDepth: Int,
-        visited: MutableSet<String>
+        ancestorStack: MutableSet<String>,
+        incrementExpanded: () -> Int
     ): CallNode {
         val nodeId = CallNode.createId(method)
 
-        // Check for cycles
-        if (nodeId in visited) {
+        // True directed cycle: this node is already on the current recursion path
+        if (nodeId in ancestorStack) {
             return createCyclicRefNode(method, currentDepth)
         }
 
@@ -239,11 +288,12 @@ class JavaCallAnalyzer(
         }
 
         // Check node limit
-        if (visited.size >= config.maxNodes) {
+        if (incrementExpanded() > config.maxNodes) {
             return CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
         }
 
-        visited.add(nodeId)
+        // Push onto ancestor stack
+        ancestorStack.add(nodeId)
 
         val node = CallNode.fromPsiMethod(method, detectNodeType(method), currentDepth)
 
@@ -258,7 +308,8 @@ class JavaCallAnalyzer(
                     callingMethod,
                     maxDepth,
                     currentDepth + 1,
-                    visited
+                    ancestorStack,
+                    incrementExpanded
                 )
                 node.callers.add(parentNode)
             }
@@ -278,13 +329,17 @@ class JavaCallAnalyzer(
                             callingMethod,
                             maxDepth,
                             currentDepth + 1,
-                            visited
+                            ancestorStack,
+                            incrementExpanded
                         )
                         node.callers.add(parentNode)
                     }
                 }
             }
         }
+
+        // Pop from ancestor stack
+        ancestorStack.remove(nodeId)
 
         return node
     }

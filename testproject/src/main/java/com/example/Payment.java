@@ -1,33 +1,31 @@
 package com.example;
 
-import javax.persistence.Entity;
-import javax.persistence.FetchType;
-import javax.persistence.OneToMany;
+import javax.persistence.*;
 import java.util.List;
 
+/**
+ * Payment entity demonstrating multiple JPA risk patterns:
+ * - @Id with @GeneratedValue(IDENTITY) → early INSERT lock
+ * - @OneToMany with cascade=ALL + fetch=EAGER → cascade + eager risks
+ */
 @Entity
 public class Payment {
-    private String id;
-    private double amount;
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
     private String status;
+    private double amount;
 
-    @OneToMany(fetch = FetchType.EAGER)
-    private List<String> auditEntries;
+    @OneToMany(fetch = FetchType.EAGER, cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<AuditEntry> auditEntries;
 
-    public String getId() {
+    public Long getId() {
         return id;
     }
 
-    public void setId(String id) {
+    public void setId(Long id) {
         this.id = id;
-    }
-
-    public double getAmount() {
-        return amount;
-    }
-
-    public void setAmount(double amount) {
-        this.amount = amount;
     }
 
     public String getStatus() {
@@ -38,11 +36,19 @@ public class Payment {
         this.status = status;
     }
 
-    public List<String> getAuditEntries() {
+    public double getAmount() {
+        return amount;
+    }
+
+    public void setAmount(double amount) {
+        this.amount = amount;
+    }
+
+    public List<AuditEntry> getAuditEntries() {
         return auditEntries;
     }
 
-    public void setAuditEntries(List<String> auditEntries) {
+    public void setAuditEntries(List<AuditEntry> auditEntries) {
         this.auditEntries = auditEntries;
     }
 }

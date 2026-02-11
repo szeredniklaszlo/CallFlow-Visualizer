@@ -21,4 +21,8 @@ public class PaymentRepository {
         // Returns entities with @OneToMany(fetch=EAGER) - triggers EAGER warning
         return List.of();
     }
+
+    public void delete(Payment payment) {
+        // Simulate delete — Payment has cascade=ALL so this cascades
+    }
 }

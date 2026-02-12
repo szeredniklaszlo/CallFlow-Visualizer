@@ -9,6 +9,11 @@ on:
         description: 'Release tag (e.g. v1.0.5). Leave empty to skip GitHub Release.'
         required: false
         default: ''
+      publish_to_marketplace:
+        description: 'Publish to JetBrains Marketplace?'
+        required: false
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -77,3 +82,33 @@ jobs:
           files: "*.zip"
           draft: false
           prerelease: false
+
+  publish:
+    name: Publish to JetBrains Marketplace
+    needs: build
+    runs-on: ubuntu-latest
+    if: >
+      (github.event_name == 'workflow_dispatch' && github.event.inputs.publish_to_marketplace == 'true')
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Setup Gradle
+        uses: gradle/actions/setup-gradle@v4
+
+      # signPlugin runs automatically before publishPlugin
+      # when CERTIFICATE_CHAIN and PRIVATE_KEY are set
+      - name: Sign & Publish Plugin
+        run: ./gradlew publishPlugin
+        env:
+          CERTIFICATE_CHAIN: ${{ secrets.CERTIFICATE_CHAIN }}
+          PRIVATE_KEY: ${{ secrets.PRIVATE_KEY }}
+          PRIVATE_KEY_PASSWORD: ${{ secrets.PRIVATE_KEY_PASSWORD }}
+          PUBLISH_TOKEN: ${{ secrets.PUBLISH_TOKEN }}

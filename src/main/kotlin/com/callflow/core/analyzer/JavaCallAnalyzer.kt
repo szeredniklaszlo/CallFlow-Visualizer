@@ -147,11 +147,12 @@ class JavaCallAnalyzer(
                 )
                 node.callees.add(childNode)
 
-                // Check if this call is inside a loop and set edge properties
+                // Always store edge properties with the call site for navigation
                 val isInLoop = riskDetector.isInsideLoop(callInfo.callSite)
-                if (isInLoop) {
-                    node.calleeEdgeProperties[childNode.id] = EdgeProperties(isInsideLoop = true)
-                }
+                node.calleeEdgeProperties[childNode.id] = EdgeProperties(
+                    isInsideLoop = isInLoop,
+                    callSiteElement = callInfo.callSite
+                )
 
                 // Enrich callee node with JPA-level risk detections
                 val additionalWarnings = mutableListOf<String>()

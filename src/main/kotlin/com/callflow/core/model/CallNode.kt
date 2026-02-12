@@ -8,7 +8,10 @@ import com.intellij.psi.PsiMethod
  */
 data class EdgeProperties(
     /** Whether this call occurs inside a loop (for, while, foreach) */
-    val isInsideLoop: Boolean = false
+    val isInsideLoop: Boolean = false,
+
+    /** PSI element of the call expression — for navigating to the exact call site */
+    val callSiteElement: PsiElement? = null
 )
 
 /**

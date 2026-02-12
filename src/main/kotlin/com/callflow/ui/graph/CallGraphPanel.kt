@@ -37,6 +37,7 @@ class CallGraphPanel : JPanel() {
     private var lastDragPoint: Point? = null
     private var selectedNode: GraphNode? = null
     private var hoveredNode: GraphNode? = null
+    private var hoveredEdge: GraphEdge? = null
 
     // Display options
     private var hideEntities: Boolean = false
@@ -83,14 +84,23 @@ class CallGraphPanel : JPanel() {
         addMouseListener(object : MouseAdapter() {
             override fun mousePressed(e: MouseEvent) {
                 if (SwingUtilities.isLeftMouseButton(e)) {
+                    LOG.info("Mouse pressed at ${e.point}")
                     val clickedNode = findNodeAt(e.point)
                     if (clickedNode != null) {
                         selectedNode = clickedNode
-                        // Navigate to source on single click
+                        // Navigate to method definition on node click
                         clickedNode.callNode.navigate(true)
                     } else {
-                        dragStartPoint = e.point
-                        lastDragPoint = e.point
+                        // Check if an edge was clicked — navigate to call site
+                        val clickedEdge = findEdgeAt(e.point)
+                        if (clickedEdge != null) {
+                            LOG.info("Edge clicked! Navigating...")
+                            navigateToCallSite(clickedEdge)
+                        } else {
+                            LOG.info("No edge found at ${e.point}")
+                            dragStartPoint = e.point
+                            lastDragPoint = e.point
+                        }
                     }
                     repaint()
                 }
@@ -118,15 +128,19 @@ class CallGraphPanel : JPanel() {
 
             override fun mouseMoved(e: MouseEvent) {
                 val node = findNodeAt(e.point)
-                if (node != hoveredNode) {
-                    hoveredNode = node
-                    cursor = if (node != null) {
-                        Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
-                    } else {
-                        Cursor.getDefaultCursor()
-                    }
-                    repaint()
+                val edge = if (node == null) findEdgeAt(e.point) else null
+
+                val needsRepaint = node != hoveredNode || edge != hoveredEdge
+                hoveredNode = node
+                hoveredEdge = edge
+
+                cursor = when {
+                    node != null -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    edge != null -> Cursor.getPredefinedCursor(Cursor.HAND_CURSOR)
+                    else -> Cursor.getDefaultCursor()
                 }
+
+                if (needsRepaint) repaint()
             }
         })
     }
@@ -386,6 +400,67 @@ class CallGraphPanel : JPanel() {
         }
     }
 
+    /**
+     * Find the edge closest to a screen point (within hit tolerance).
+     * Samples points along the bezier curve and checks distance.
+     */
+    private fun findEdgeAt(point: Point): GraphEdge? {
+        val hitWidth = 12.0 / scale // Hit zone thickness in world units
+
+        val worldX = (point.x - offsetX) / scale
+        val worldY = (point.y - offsetY) / scale
+
+        // Debug logging for hit test
+        // LOG.info("Hit test at screen=${point}, world=($worldX, $worldY), tol=$hitWidth")
+
+        return graphEdges.find { edge ->
+            val path = edgeBezierPath(edge)
+            // Create a wide stroke shape for hit testing
+            val stroke = BasicStroke(hitWidth.toFloat(), BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            val hitShape = stroke.createStrokedShape(path)
+            val hit = hitShape.contains(worldX, worldY)
+            if (hit) {
+                LOG.info("Hit edge: ${edge.from.callNode.displayName} -> ${edge.to.callNode.displayName}")
+            }
+            hit
+        }
+    }
+
+
+
+    /**
+     * Build the bezier path for an edge (shared between drawing and hit-testing).
+     */
+    private fun edgeBezierPath(edge: GraphEdge): Path2D.Double {
+        val fromX = edge.from.x + nodeWidth
+        val fromY = edge.from.y + nodeHeight / 2
+        val toX = edge.to.x
+        val toY = edge.to.y + nodeHeight / 2
+        val midX = (fromX + toX) / 2.0
+
+        val path = Path2D.Double()
+        path.moveTo(fromX.toDouble(), fromY.toDouble())
+        path.curveTo(midX, fromY.toDouble(), midX, toY.toDouble(), toX.toDouble(), toY.toDouble())
+        return path
+    }
+
+    /**
+     * Navigate to the call site of an edge in the source editor.
+     */
+    private fun navigateToCallSite(edge: GraphEdge) {
+        val edgeProps = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]
+        val callSite = edgeProps?.callSiteElement
+
+        if (callSite != null && callSite.isValid) {
+            val navigatable = (callSite as? com.intellij.pom.Navigatable)
+                ?: (callSite.navigationElement as? com.intellij.pom.Navigatable)
+            navigatable?.navigate(true)
+        } else {
+            // Fallback: navigate to the callee method definition
+            edge.to.callNode.navigate(true)
+        }
+    }
+
     override fun paintComponent(g: Graphics) {
         super.paintComponent(g)
         val g2 = g as Graphics2D
@@ -436,24 +511,39 @@ class CallGraphPanel : JPanel() {
         // Check edge properties
         val isLoopEdge = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]?.isInsideLoop == true
         val isCriticalEdge = edge.from.callNode.id in criticalPath && edge.to.callNode.id in criticalPath
+        val isHovered = edge === hoveredEdge
+
+        // Draw hover glow effect (wider, semi-transparent)
+        if (isHovered) {
+            val glowPath = edgeBezierPath(edge)
+            g2.color = Color(0x42A5F5)  // Light blue glow
+            g2.stroke = BasicStroke(10f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+            val original = g2.composite
+            g2.composite = AlphaComposite.getInstance(AlphaComposite.SRC_OVER, 0.35f)
+            g2.draw(glowPath)
+            g2.composite = original
+        }
+
+        // Hover makes edge slightly thicker
+        val hoverBoost = if (isHovered) 1.5f else 0f
 
         // Edge line style — combines properties (critical+loop = thickest)
         when {
             isCriticalEdge && isLoopEdge -> {
                 g2.color = Color(0xB71C1C)  // Dark red
-                g2.stroke = BasicStroke(5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                g2.stroke = BasicStroke(5f + hoverBoost, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
             }
             isCriticalEdge -> {
                 g2.color = Color(0xB71C1C)
-                g2.stroke = BasicStroke(4f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                g2.stroke = BasicStroke(4f + hoverBoost, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
             }
             isLoopEdge -> {
                 g2.color = Color(0xE65100)  // Dark orange
-                g2.stroke = BasicStroke(3.5f, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
+                g2.stroke = BasicStroke(3.5f + hoverBoost, BasicStroke.CAP_ROUND, BasicStroke.JOIN_ROUND)
             }
             else -> {
-                g2.color = JBColor.GRAY
-                g2.stroke = BasicStroke(2f)
+                g2.color = if (isHovered) Color(0x42A5F5) else JBColor.GRAY
+                g2.stroke = BasicStroke(2f + hoverBoost)
             }
         }
 
@@ -808,10 +898,7 @@ class CallGraphPanel : JPanel() {
             // Node frame colors
             LegendItem(LegendIcon.RECT, Color(0xE53935), "★ Start node (red border)"),
             LegendItem(LegendIcon.RECT_DASHED, Color(0xD32F2F), "TX + External I/O (red dashed)"),
-            LegendItem(LegendIcon.RECT, Color(0xE3F2FD).darker(), "Controller"),
-            LegendItem(LegendIcon.RECT, Color(0xE8F5E9).darker(), "Service"),
-            LegendItem(LegendIcon.RECT, Color(0xFFF3E0).darker(), "Repository"),
-            LegendItem(LegendIcon.RECT, Color(0xF3E5F5).darker(), "Entity"),
+            LegendItem(LegendIcon.RECT, Color(0xE3F2FD).darker(), "Controller / Service / Repository / Entity"),
             // Edge styles
             LegendItem(LegendIcon.LINE, JBColor.GRAY, "Normal call"),
             LegendItem(LegendIcon.LINE_THICK, Color(0xE65100), "\u27F3 Loop-enclosed call"),

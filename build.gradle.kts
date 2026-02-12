@@ -47,7 +47,7 @@ kotlin {
 
 intellijPlatform {
     pluginConfiguration {
-        name = "CallFlow Visualizer"
+        name = "CallFlow Visualizer X"
         version = project.version.toString()
 
         ideaVersion {

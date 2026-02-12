@@ -70,9 +70,9 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ github.event.inputs.release_tag }}
-          name: "CallFlow Visualizer ${{ github.event.inputs.release_tag }}"
+          name: "CallFlow Visualizer X ${{ github.event.inputs.release_tag }}"
           body: |
-            ## CallFlow Visualizer ${{ github.event.inputs.release_tag }}
+            ## CallFlow Visualizer X ${{ github.event.inputs.release_tag }}
 
             ### Installation
             1. Download the `.zip` file below

@@ -19,7 +19,7 @@
     <!-- <product-descriptor code="PCALLFLOW" release-date="20250116" release-version="10000"/> -->
 
     <description><![CDATA[
-        <h2>CallFlow Visualizer</h2>
+        <h2>CallFlow Visualizer X</h2>
         <p>Visualize method call flows in Spring Boot codebases with bidirectional analysis.</p>
 
         <h3>Features</h3>
@@ -67,7 +67,7 @@
                 parentId="tools"
                 instance="com.callflow.settings.CallFlowConfigurable"
                 id="com.callflow.settings.CallFlowConfigurable"
-                displayName="CallFlow Visualizer"/>
+                displayName="CallFlow Visualizer X"/>
 
         <applicationService
                 serviceImplementation="com.callflow.settings.CallFlowSettings"/>

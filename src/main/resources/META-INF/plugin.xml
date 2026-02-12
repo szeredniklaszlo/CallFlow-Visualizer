@@ -2,7 +2,7 @@
 <idea-plugin>
     <id>com.callflow.visualizer</id>
     <name>CallFlow Visualizer</name>
-    <version>1.0.5</version>
+    <version>1.0.4-X</version>
     <vendor url="https://github.com/szeredniklaszlo/CallFlow-Visualizer">Szerednik László</vendor>
 
     <!--

@@ -1,9 +1,9 @@
 <!-- Plugin Configuration File. Read more: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
-    <id>com.callflow.visualizer</id>
+    <id>com.callflow.visualizer.x</id>
     <name>CallFlow Visualizer</name>
     <version>1.0.4-X</version>
-    <vendor url="https://github.com/szeredniklaszlo/CallFlow-Visualizer">Szerednik László</vendor>
+    <vendor url="https://github.com/szeredniklaszlo/CallFlow-Visualizer">Laszlo Szerednik</vendor>
 
     <!--
     ============================================

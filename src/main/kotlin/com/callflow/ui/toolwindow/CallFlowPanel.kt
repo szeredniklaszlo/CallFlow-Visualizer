@@ -21,10 +21,12 @@ import com.intellij.openapi.util.Disposer
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.psi.PsiMethod
 import com.intellij.ui.JBSplitter
+import com.intellij.ui.components.JBCheckBox
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.components.JBTabbedPane
 import com.intellij.util.ui.JBUI
+import com.intellij.openapi.ui.popup.JBPopupFactory
 import java.awt.BorderLayout
 import java.awt.FlowLayout
 import javax.swing.*
@@ -51,6 +53,23 @@ class CallFlowPanel(
     private val hideEntitiesCheckbox = JCheckBox("Hide Entities", false)
     private val hideTestCodeCheckbox = JCheckBox("Hide Test Code", true)  // Default: hide test code
     private val warningPanel = WarningListPanel()
+    private var graphSplitter: JBSplitter? = null
+
+    // Toolbar controls
+    private val showLegendCheckbox = JCheckBox("Legend", false)
+    private val showWarningsCheckbox = JCheckBox("Warnings", true)
+
+    // Badge visibility state
+    private val badgeVisibility = mutableMapOf(
+        "transactional" to true,
+        "async" to true,
+        "externalCall" to true,
+        "warning" to true,
+        "tableScan" to true,
+        "cascade" to true,
+        "earlyLock" to true,
+        "httpMethod" to true
+    )
 
     // State
     private var currentGraph: CallGraph? = null
@@ -122,14 +141,14 @@ class CallFlowPanel(
             }
 
             // Graph + Warning panel in a splitter
-            val graphSplitter = JBSplitter(false, 0.75f).apply {
+            graphSplitter = JBSplitter(false, 0.75f).apply {
                 firstComponent = graphPanel
                 secondComponent = warningPanel
                 dividerWidth = 3
             }
 
             add(zoomToolbar, BorderLayout.NORTH)
-            add(graphSplitter, BorderLayout.CENTER)
+            add(graphSplitter!!, BorderLayout.CENTER)
         }
 
         // Tabbed pane
@@ -174,6 +193,72 @@ class CallFlowPanel(
                 }
             }
             add(hideTestCodeCheckbox)
+
+            // Show Legend checkbox
+            showLegendCheckbox.apply {
+                toolTipText = "Show/hide legend overlay on the graph"
+                addActionListener {
+                    graphPanel.setShowLegend(isSelected)
+                }
+            }
+            add(showLegendCheckbox)
+
+            // Show Warnings sidebar checkbox
+            showWarningsCheckbox.apply {
+                toolTipText = "Show/hide risk warnings sidebar"
+                addActionListener {
+                    warningPanel.isVisible = isSelected
+                    graphSplitter?.let {
+                        if (isSelected) {
+                            it.proportion = 0.75f
+                        } else {
+                            it.proportion = 1.0f
+                        }
+                    }
+                }
+            }
+            add(showWarningsCheckbox)
+
+            // Badge filter dropdown
+            val badgeFilterButton = JButton("Badges \u25BE").apply {
+                toolTipText = "Filter which badges are shown on nodes"
+                addActionListener {
+                    val panel = JPanel().apply {
+                        layout = BoxLayout(this, BoxLayout.Y_AXIS)
+                        border = JBUI.Borders.empty(6)
+                    }
+
+                    val items = listOf(
+                        "@Transactional" to "transactional",
+                        "@Async" to "async",
+                        "External Calls" to "externalCall",
+                        "Warnings (FLUSH/EAGER)" to "warning",
+                        "Risk: Table Scan" to "tableScan",
+                        "Risk: Cascade" to "cascade",
+                        "Risk: Early Lock" to "earlyLock",
+                        "HTTP Method" to "httpMethod"
+                    )
+
+                    for ((label, key) in items) {
+                        val cb = JBCheckBox(label, badgeVisibility[key] ?: true)
+                        cb.addActionListener {
+                            badgeVisibility[key] = cb.isSelected
+                            graphPanel.setBadgeVisibility(badgeVisibility.toMap())
+                        }
+                        panel.add(cb)
+                    }
+
+                    JBPopupFactory.getInstance()
+                        .createComponentPopupBuilder(panel, null)
+                        .setRequestFocus(true)
+                        .setFocusable(true)
+                        .setResizable(false)
+                        .setMovable(false)
+                        .createPopup()
+                        .showUnderneathOf(this)
+                }
+            }
+            add(badgeFilterButton)
 
             // Refresh button
             val refreshButton = JButton("Refresh").apply {

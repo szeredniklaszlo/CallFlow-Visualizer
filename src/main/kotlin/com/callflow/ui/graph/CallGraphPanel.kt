@@ -42,6 +42,19 @@ class CallGraphPanel : JPanel() {
     // Display options
     private var hideEntities: Boolean = false
     private var hideTestCode: Boolean = true  // Default: hide test code
+    private var showLegend: Boolean = false  // Default: legend hidden
+
+    // Badge visibility filters (all visible by default)
+    private var badgeVisibility: Map<String, Boolean> = mapOf(
+        "transactional" to true,
+        "async" to true,
+        "externalCall" to true,
+        "warning" to true,
+        "tableScan" to true,
+        "cascade" to true,
+        "earlyLock" to true,
+        "httpMethod" to true
+    )
 
     // Critical path highlighting (Feature 8)
     private var criticalPath: Set<String> = emptySet()
@@ -491,7 +504,7 @@ class CallGraphPanel : JPanel() {
         drawZoomIndicator(g2)
 
         // Draw legend (screen-space, bottom-right)
-        if (graphNodes.isNotEmpty()) {
+        if (showLegend && graphNodes.isNotEmpty()) {
             drawLegend(g2)
         }
 
@@ -738,8 +751,8 @@ class CallGraphPanel : JPanel() {
     private fun drawAnnotationBadges(g2: Graphics2D, x: Int, y: Int, metadata: com.callflow.core.model.NodeMetadata) {
         val badges = mutableListOf<Pair<String, Color>>()
 
-        // Transaction badges
-        if (metadata.isTransactional) {
+        // Transaction badges (category: "transactional")
+        if (badgeVisibility["transactional"] != false && metadata.isTransactional) {
             when {
                 metadata.isReadOnlyTx -> badges.add("@Tx(RO)" to Color(0x4CAF50))  // Green
                 metadata.transactionPropagation == TransactionPropagation.REQUIRES_NEW ->
@@ -748,22 +761,36 @@ class CallGraphPanel : JPanel() {
             }
         }
 
-        // Async badge
-        if (metadata.isAsync) badges.add("@Async" to Color(0x7B1FA2))  // Purple
+        // Async badge (category: "async")
+        if (badgeVisibility["async"] != false && metadata.isAsync) badges.add("@Async" to Color(0x7B1FA2))  // Purple
 
-        // External call badges
-        if ("MQ_SEND" in metadata.externalCallFlags) badges.add("MQ Send" to Color(0xE65100))  // Deep orange
-        if ("HTTP_CALL" in metadata.externalCallFlags) badges.add("HTTP Call" to Color(0x6A1B9A))  // Deep purple
+        // External call badges (category: "externalCall")
+        if (badgeVisibility["externalCall"] != false) {
+            if ("MQ_SEND" in metadata.externalCallFlags) badges.add("MQ Send" to Color(0xE65100))
+            if ("HTTP_CALL" in metadata.externalCallFlags) badges.add("HTTP Call" to Color(0x6A1B9A))
+        }
 
-        // Warning badges
-        if ("FLUSH" in metadata.warningFlags) badges.add("FLUSH!" to Color(0xF9A825))  // Amber
-        if ("EAGER_FETCH" in metadata.warningFlags) badges.add("EAGER!" to Color(0xF9A825))  // Amber
-        if ("TABLE_SCAN_RISK" in metadata.warningFlags) badges.add("\u2620 TABLE SCAN!" to Color(0x8B0000))  // Dark red
-        if ("CASCADE_OPERATION" in metadata.warningFlags) badges.add("CASCADE" to Color(0xBF360C))  // Deep dark orange
-        if ("EARLY_INSERT_LOCK" in metadata.warningFlags) badges.add("\u26A1 EARLY LOCK" to Color(0xC62828))  // Red
+        // Warning badges (category: "warning")
+        if (badgeVisibility["warning"] != false) {
+            if ("FLUSH" in metadata.warningFlags) badges.add("FLUSH!" to Color(0xF9A825))
+            if ("EAGER_FETCH" in metadata.warningFlags) badges.add("EAGER!" to Color(0xF9A825))
+        }
 
-        // HTTP method badge
-        metadata.httpMethod?.let { badges.add(it to Color(0x00838F))  }
+        // Risk badges (split categories)
+        if (badgeVisibility["tableScan"] != false) {
+            if ("TABLE_SCAN_RISK" in metadata.warningFlags) badges.add("\u2620 TABLE SCAN!" to Color(0x8B0000))
+        }
+        if (badgeVisibility["cascade"] != false) {
+            if ("CASCADE_OPERATION" in metadata.warningFlags) badges.add("CASCADE" to Color(0xBF360C))
+        }
+        if (badgeVisibility["earlyLock"] != false) {
+            if ("EARLY_INSERT_LOCK" in metadata.warningFlags) badges.add("\u26A1 EARLY LOCK" to Color(0xC62828))
+        }
+
+        // HTTP method badge (category: "httpMethod")
+        if (badgeVisibility["httpMethod"] != false) {
+            metadata.httpMethod?.let { badges.add(it to Color(0x00838F)) }
+        }
 
         if (badges.isEmpty()) return
 
@@ -1044,6 +1071,25 @@ class CallGraphPanel : JPanel() {
      */
     fun setCriticalPath(path: List<String>) {
         this.criticalPath = path.toSet()
+        repaint()
+    }
+
+    /**
+     * Set whether to show the legend overlay.
+     */
+    fun setShowLegend(show: Boolean) {
+        if (this.showLegend != show) {
+            this.showLegend = show
+            repaint()
+        }
+    }
+
+    /**
+     * Set badge visibility by category.
+     * Keys: "transactional", "async", "externalCall", "warning", "tableScan", "cascade", "earlyLock", "httpMethod"
+     */
+    fun setBadgeVisibility(visibility: Map<String, Boolean>) {
+        this.badgeVisibility = visibility
         repaint()
     }
 

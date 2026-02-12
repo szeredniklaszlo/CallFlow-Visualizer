@@ -46,6 +46,27 @@ class CallFlowSettings : PersistentStateComponent<CallFlowSettings.State> {
         /** Whether to show HTTP method badge */
         var showHttpMethodBadge: Boolean = true,
 
+        /** Whether to show external call badges (MQ Send, HTTP Call) */
+        var showExternalCallBadge: Boolean = true,
+
+        /** Whether to show warning badges (FLUSH!, EAGER!) */
+        var showWarningBadge: Boolean = true,
+
+        /** Whether to show TABLE SCAN risk badge */
+        var showTableScanBadge: Boolean = true,
+
+        /** Whether to show CASCADE risk badge */
+        var showCascadeBadge: Boolean = true,
+
+        /** Whether to show EARLY LOCK risk badge */
+        var showEarlyLockBadge: Boolean = true,
+
+        /** Whether to show the legend overlay on the graph */
+        var showLegend: Boolean = false,
+
+        /** Whether to show the warnings sidebar */
+        var showWarnings: Boolean = true,
+
         /** Default export format */
         var defaultExportFormat: String = "mermaid",
 
@@ -82,6 +103,34 @@ class CallFlowSettings : PersistentStateComponent<CallFlowSettings.State> {
     var includeExternalCalls: Boolean
         get() = myState.includeExternalCalls
         set(value) { myState.includeExternalCalls = value }
+
+    var showExternalCallBadge: Boolean
+        get() = myState.showExternalCallBadge
+        set(value) { myState.showExternalCallBadge = value }
+
+    var showWarningBadge: Boolean
+        get() = myState.showWarningBadge
+        set(value) { myState.showWarningBadge = value }
+
+    var showTableScanBadge: Boolean
+        get() = myState.showTableScanBadge
+        set(value) { myState.showTableScanBadge = value }
+
+    var showCascadeBadge: Boolean
+        get() = myState.showCascadeBadge
+        set(value) { myState.showCascadeBadge = value }
+
+    var showEarlyLockBadge: Boolean
+        get() = myState.showEarlyLockBadge
+        set(value) { myState.showEarlyLockBadge = value }
+
+    var showLegend: Boolean
+        get() = myState.showLegend
+        set(value) { myState.showLegend = value }
+
+    var showWarnings: Boolean
+        get() = myState.showWarnings
+        set(value) { myState.showWarnings = value }
 
     fun getExcludePackagesList(): List<String> =
         myState.excludePackages.split(",").map { it.trim() }.filter { it.isNotEmpty() }

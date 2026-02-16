@@ -68,6 +68,9 @@ class CallFlowPanel(
         "tableScan" to true,
         "cascade" to true,
         "earlyLock" to true,
+        "earlyLock" to true,
+        "eventPublisher" to true,
+        "asyncInvocation" to true,
         "httpMethod" to true
     )
 
@@ -236,6 +239,11 @@ class CallFlowPanel(
                         "Risk: Table Scan" to "tableScan",
                         "Risk: Cascade" to "cascade",
                         "Risk: Early Lock" to "earlyLock",
+                        "Risk: Table Scan" to "tableScan",
+                        "Risk: Cascade" to "cascade",
+                        "Risk: Early Lock" to "earlyLock",
+                        "Risk: Async in Tx" to "asyncInvocation",
+                        "Event Publisher" to "eventPublisher",
                         "HTTP Method" to "httpMethod"
                     )
 

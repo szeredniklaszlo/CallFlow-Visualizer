@@ -149,10 +149,26 @@ class JavaCallAnalyzer(
 
                 // Always store edge properties with the call site for navigation
                 val isInLoop = riskDetector.isInsideLoop(callInfo.callSite)
+                val isAsyncCall = riskDetector.isAsyncCall(callInfo.callSite)
+                
+                // Edge is async if the call site is an async starter OR the target method is @Async
+                val isAsyncEdge = isAsyncCall || childNode.metadata.isAsync
+
                 node.calleeEdgeProperties[childNode.id] = EdgeProperties(
                     isInsideLoop = isInLoop,
-                    callSiteElement = callInfo.callSite
+                    callSiteElement = callInfo.callSite,
+                    isAsync = isAsyncEdge
                 )
+
+                // If it's an async invocation, verify if we are in a transaction and warn
+                if (isAsyncEdge) {
+                     val warning = "ASYNC_INVOCATION"
+                     if (warning !in node.metadata.externalCallFlags) {
+                         // We track async dispatch as an "external call" behavior for risk scoring
+                         val newExternalFlags = node.metadata.externalCallFlags + warning
+                         node = node.copy(metadata = node.metadata.copy(externalCallFlags = newExternalFlags))
+                     }
+                }
 
                 // Enrich callee node with JPA-level risk detections
                 val additionalWarnings = mutableListOf<String>()
@@ -257,7 +273,8 @@ class JavaCallAnalyzer(
             node.copy(
                 metadata = node.metadata.copy(
                     externalCallFlags = node.metadata.externalCallFlags + externalFlags,
-                    warningFlags = node.metadata.warningFlags + warningFlags
+                    warningFlags = node.metadata.warningFlags + warningFlags,
+                    isEventPublisher = "EVENT_PUBLISH" in externalFlags
                 )
             )
         } else {
@@ -312,7 +329,7 @@ class JavaCallAnalyzer(
                     ancestorStack,
                     incrementExpanded
                 )
-                node.callers.add(parentNode)
+                addCallerToNode(node, parentNode, reference.element)
             }
         }
 
@@ -333,7 +350,7 @@ class JavaCallAnalyzer(
                             ancestorStack,
                             incrementExpanded
                         )
-                        node.callers.add(parentNode)
+                        addCallerToNode(node, parentNode, reference.element)
                     }
                 }
             }
@@ -396,7 +413,7 @@ class JavaCallAnalyzer(
     private fun findJavaMethodCalls(element: PsiElement): List<MethodCallInfo> {
         val calls = mutableListOf<MethodCallInfo>()
 
-        element.accept(object : JavaRecursiveElementVisitor() {
+        element.accept(object : JavaRecursiveElementWalkingVisitor() {
             override fun visitMethodCallExpression(expression: PsiMethodCallExpression) {
                 super.visitMethodCallExpression(expression)
                 expression.resolveMethod()?.let { resolved ->
@@ -589,11 +606,98 @@ class JavaCallAnalyzer(
             val file = method.containingFile?.virtualFile ?: return false
             val index = com.intellij.openapi.roots.ProjectFileIndex.getInstance(project)
             if (!index.isInSource(file)) {
+                // BUT: Allow specific framework methods that we want to track (Feature 12, 5, etc.)
+                // 1. Spring Event Publisher
+                if (qualifiedName.contains("ApplicationEventPublisher") && method.name == "publishEvent") return true
+                
+                // 2. JMS / Kafka / RabbitMQ templates (MQ_SEND)
+                if ((qualifiedName.contains("Template") || qualifiedName.contains("kafka") || qualifiedName.contains("rabbit")) 
+                    && (method.name.startsWith("send") || method.name.startsWith("convertAndSend"))) return true
+
+                // 3. JPA Repository methods (save, saveAndFlush, delete)
+                if (isRepositoryMethod(method)) return true
+
+                // 4. Thread / ExecutorService start methods (already handled by RiskPatternDetector, but good to include as nodes)
+                if (qualifiedName.startsWith("java.util.concurrent") || qualifiedName == "java.lang.Thread") return true
+
                 return false
             }
         }
 
+        // Feature 14: Filter Getters and Setters
+        // 1. Exclude all setters
+        if (isSetter(method)) return false
+
+        // 2. Exclude getters UNLESS they access performance-critical fields (JPA relations, LOBs)
+        if (isGetter(method) && !isPerformanceCriticalGetter(method)) return false
+
         return true
+    }
+
+    private fun isSetter(method: PsiMethod): Boolean {
+        // Basic heuristic: starts with "set", has 1 parameter, returns void or builder (class type)
+        // or check purely on name for now as per user request "settereket szintén hagyjuk ki"
+        return method.name.startsWith("set") && method.parameterList.parametersCount == 1
+    }
+
+    private fun isGetter(method: PsiMethod): Boolean {
+        return (method.name.startsWith("get") || method.name.startsWith("is")) && 
+               method.parameterList.parametersCount == 0
+    }
+
+    private fun isPerformanceCriticalGetter(method: PsiMethod): Boolean {
+        // 1. Find the backing field
+        // Simple heuristic: getFoo -> foo
+        val methodName = method.name
+        val fieldName = if (methodName.startsWith("get")) {
+            methodName.removePrefix("get").replaceFirstChar { it.lowercase() }
+        } else {
+            methodName.removePrefix("is").replaceFirstChar { it.lowercase() }
+        }
+
+        val containingClass = method.containingClass ?: return false
+        
+        // Try to find the field in the class
+        val field = containingClass.findFieldByName(fieldName, true) ?: return false
+
+        // 2. Check for performance-critical JPA annotations
+        val criticalAnnotations = listOf(
+            "javax.persistence.OneToMany", "jakarta.persistence.OneToMany",
+            "javax.persistence.ManyToMany", "jakarta.persistence.ManyToMany",
+            "javax.persistence.ElementCollection", "jakarta.persistence.ElementCollection",
+            "javax.persistence.Lob", "jakarta.persistence.Lob",
+            "javax.persistence.ManyToOne", "jakarta.persistence.ManyToOne", // Eager by default, but traversing can trigger load
+            "javax.persistence.OneToOne", "jakarta.persistence.OneToOne"
+        )
+
+        for (annotation in field.annotations) {
+            val name = annotation.qualifiedName ?: continue
+            // Check for specific relationship annotations
+            if (criticalAnnotations.any { name == it || name.endsWith("." + it.substringAfterLast(".")) }) {
+                return true
+            }
+            
+            // Check @Basic(fetch = LAZY)
+            if (name.contains("Basic")) {
+                val fetchValue = annotation.findAttributeValue("fetch")
+                if (fetchValue?.text?.contains("LAZY") == true) return true
+            }
+        }
+
+        return false
+    }
+
+    private fun isRepositoryMethod(method: PsiMethod): Boolean {
+        val containingClass = method.containingClass ?: return false
+        val isRepo = containingClass.name?.contains("Repository") == true || 
+                     containingClass.interfaces.any { it.name?.contains("Repository") == true }
+        
+        return isRepo && (
+               method.name.startsWith("save") || 
+               method.name.startsWith("delete") || 
+               method.name.startsWith("find") ||
+               method.name == "flush"
+        )
     }
 
     /**
@@ -650,5 +754,28 @@ class JavaCallAnalyzer(
     private fun createCyclicRefNode(method: PsiMethod, depth: Int): CallNode {
         return CallNode.fromPsiMethod(method, detectNodeType(method), depth)
             .copy(isCyclicRef = true)
+    }
+
+    private fun addCallerToNode(
+        targetNode: CallNode,
+        parentNode: CallNode,
+        callSite: PsiElement
+    ) {
+        // We add parent to target's callers list
+        targetNode.callers.add(parentNode)
+
+        // BUT crucial: the edge goes Parent -> Target
+        // We must store edge properties on the PARENT node for the UI to render it correctly
+        val isAsyncCall = riskDetector.isAsyncCall(callSite)
+        val isInLoop = riskDetector.isInsideLoop(callSite)
+        
+        // Combine with target's own async status
+        val isAsyncEdge = isAsyncCall || targetNode.metadata.isAsync
+
+        parentNode.calleeEdgeProperties[targetNode.id] = EdgeProperties(
+            isInsideLoop = isInLoop,
+            callSiteElement = callSite,
+            isAsync = isAsyncEdge
+        )
     }
 }

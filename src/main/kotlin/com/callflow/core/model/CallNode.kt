@@ -11,7 +11,10 @@ data class EdgeProperties(
     val isInsideLoop: Boolean = false,
 
     /** PSI element of the call expression — for navigating to the exact call site */
-    val callSiteElement: PsiElement? = null
+    val callSiteElement: PsiElement? = null,
+
+    /** Whether this call starts a new thread or async task (effectively creating a fork) */
+    val isAsync: Boolean = false
 )
 
 /**

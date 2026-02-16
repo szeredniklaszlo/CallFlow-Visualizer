@@ -1,6 +1,7 @@
 package com.example;
 
-import javax.persistence.*;
+
+import jakarta.persistence.*;
 
 /**
  * Order entity with a non-indexed email field.

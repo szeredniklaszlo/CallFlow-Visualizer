@@ -59,10 +59,14 @@ class RiskPatternDetector(private val project: Project) {
         // Message Queue sends
         if (isMqSend(className, methodName)) return "MQ_SEND"
 
+        // Spring Event Publisher
+        if (isSpringEventPublish(className, methodName)) return "EVENT_PUBLISH"
+
         // HTTP calls
         if (isHttpCall(className, methodName, resolved)) return "HTTP_CALL"
 
         return null
+    
     }
 
     private fun classifyExternalCallKotlin(expression: KtCallExpression): String? {
@@ -83,6 +87,11 @@ class RiskPatternDetector(private val project: Project) {
                 return "MQ_SEND"
             }
 
+            // Spring Event Publisher
+            if (receiverText.contains("eventpublisher") && calleeName == "publishevent") {
+                return "EVENT_PUBLISH"
+            }
+
             // HTTP patterns
             if (receiverText.contains("resttemplate") ||
                 receiverText.contains("webclient") ||
@@ -96,6 +105,101 @@ class RiskPatternDetector(private val project: Project) {
         }
 
         return null
+    }
+
+    /**
+     * Checks if a specific call site represents an asynchronous execution start
+     * OR if the call is happening within an asynchronous context (e.g. inside a lambda passed to submit).
+     */
+    fun isAsyncCall(element: PsiElement): Boolean {
+        // Direct check: is this element the submit/start call itself?
+        if (isAsyncInitiator(element)) return true
+
+        // Context check: is this element inside a lambda/runnable passed to an async initiator?
+        return isInsideAsyncContext(element)
+    }
+
+    /**
+     * Checks if the element is keeping company with async initiators.
+     */
+    private fun isAsyncInitiator(element: PsiElement): Boolean {
+        if (element is PsiMethodCallExpression) {
+            val methodName = element.methodExpression.referenceName ?: return false
+            val resolved = element.resolveMethod() ?: return false
+            val className = resolved.containingClass?.qualifiedName ?: ""
+
+            // ExecutorService / ThreadPool check
+            if ((className.contains("Executor") || className.contains("ThreadPool")) &&
+                methodName in listOf("submit", "execute", "schedule", "scheduleAtFixedRate", "scheduleWithFixedDelay")) {
+                return true
+            }
+
+            // CompletableFuture check
+            if (className.contains("CompletableFuture") &&
+                methodName in listOf("runAsync", "supplyAsync")) {
+                return true
+            }
+            
+            // Thread.start() check
+            if (className == "java.lang.Thread" && methodName == "start") {
+                return true
+            }
+
+        } else if (element is PsiNewExpression) {
+             // new Thread(...) check - treated as async start if referenced directly
+            val constructor = element.resolveConstructor()
+            val className = constructor?.containingClass?.qualifiedName
+            if (className == "java.lang.Thread") {
+                return true
+            }
+        } else if (element is KtCallExpression) {
+            // Kotlin specific checks
+            val calleeName = element.calleeExpression?.text
+            if (calleeName in listOf("runAsync", "supplyAsync", "submit", "execute", "launch", "async")) {
+                return true
+            }
+        }
+        return false
+    }
+
+    private fun isInsideAsyncContext(element: PsiElement): Boolean {
+        // Traverse up to find if we are inside a Lambda argument to an async initiator
+        var current = element.parent
+        while (current != null && current !is PsiMethod) {
+            if (current is PsiLambdaExpression) {
+                // Check what this lambda is passed to
+                val paramList = current.parent // ExpressionList
+                val call = PsiTreeUtil.getParentOfType(paramList, PsiMethodCallExpression::class.java)
+                if (call != null && isAsyncInitiator(call)) {
+                    return true
+                }
+                // Handle new Thread(() -> {})
+                val newExpr = PsiTreeUtil.getParentOfType(paramList, PsiNewExpression::class.java)
+                if (newExpr != null && isAsyncInitiator(newExpr)) {
+                    return true
+                }
+            } else if (current is PsiAnonymousClass) {
+                 // Check if it's new Runnable() passed to async initiator
+                 val newExpr = PsiTreeUtil.getParentOfType(current, PsiNewExpression::class.java)
+                 if (newExpr != null) {
+                     val paramList = newExpr.parent
+                     val call = PsiTreeUtil.getParentOfType(paramList, PsiMethodCallExpression::class.java)
+                     if (call != null && isAsyncInitiator(call)) return true
+                 }
+            }
+            // Kotlin Lambda
+            if (current is KtLambdaExpression) {
+                 val call = PsiTreeUtil.getParentOfType(current, KtCallExpression::class.java)
+                 if (call != null && isAsyncInitiator(call)) return true
+            }
+            
+            current = current.parent
+        }
+        return false
+    }
+
+    private fun isSpringEventPublish(className: String, methodName: String): Boolean {
+        return className.contains("ApplicationEventPublisher") && methodName == "publishEvent"
     }
 
     private fun isMqSend(className: String, methodName: String): Boolean {

@@ -522,7 +522,9 @@ class CallGraphPanel : JPanel() {
         val toY = edge.to.y + nodeHeight / 2
 
         // Check edge properties
-        val isLoopEdge = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]?.isInsideLoop == true
+        val edgeProps = edge.from.callNode.calleeEdgeProperties[edge.to.callNode.id]
+        val isLoopEdge = edgeProps?.isInsideLoop == true
+        val isAsyncEdge = edgeProps?.isAsync == true
         val isCriticalEdge = edge.from.callNode.id in criticalPath && edge.to.callNode.id in criticalPath
         val isHovered = edge === hoveredEdge
 
@@ -556,7 +558,17 @@ class CallGraphPanel : JPanel() {
             }
             else -> {
                 g2.color = if (isHovered) Color(0x42A5F5) else JBColor.GRAY
-                g2.stroke = BasicStroke(2f + hoverBoost)
+                
+                if (isAsyncEdge) {
+                    // Dashed line for async calls
+                    val stroke = BasicStroke(
+                        2f + hoverBoost, BasicStroke.CAP_BUTT, BasicStroke.JOIN_BEVEL,
+                        0f, floatArrayOf(9f), 0f
+                    )
+                    g2.stroke = stroke
+                } else {
+                    g2.stroke = BasicStroke(2f + hoverBoost)
+                }
             }
         }
 
@@ -585,6 +597,12 @@ class CallGraphPanel : JPanel() {
         if (isLoopEdge) {
             g2.color = Color(0xE65100)
             g2.drawString("\u27F3 loop", labelX, labelY)
+            labelY += 14
+        }
+
+        if (isAsyncEdge) {
+            g2.color = Color(0x7B1FA2) // Purple
+            g2.drawString("\uD83D\uDD31 fork", labelX, labelY) // 🔱 fork symbol
             labelY += 14
         }
 
@@ -633,7 +651,12 @@ class CallGraphPanel : JPanel() {
         }
         for (flag in meta.externalCallFlags) {
             if (meta.isTransactional) {
-                score += com.callflow.core.model.RiskWarning.RISK_SCORES.getOrDefault(flag, 0)
+                // Severe risk: Async inside Transaction
+                if (flag == "ASYNC_INVOCATION") {
+                    score += 10 
+                } else {
+                    score += com.callflow.core.model.RiskWarning.RISK_SCORES.getOrDefault(flag, 0)
+                }
             }
         }
         if (meta.isTransactional && meta.transactionPropagation == TransactionPropagation.REQUIRES_NEW) {
@@ -798,6 +821,10 @@ class CallGraphPanel : JPanel() {
         var badgeX = x + 5
         val badgeY = y + 58
         g2.font = Font("SansSerif", Font.BOLD, 9)
+
+        if (metadata.isEventPublisher) {
+            badges.add("[EVENT PUB \uD83D\uDCE4]" to Color(0x00695C)) // Teal + Outbox
+        }
         val fm = g2.fontMetrics
 
         for ((text, color) in badges) {

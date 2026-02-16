@@ -40,6 +40,12 @@ data class NodeMetadata(
     /** Event class name if this is an event publisher/listener */
     val eventClass: String? = null,
 
+    /** Whether this method publishes an event (Spring ApplicationEvent or MQ message) */
+    val isEventPublisher: Boolean = false,
+
+    /** Type of event published (e.g., "Kafka Message", "MyEvent") */
+    val eventType: String? = null,
+
     /** All annotations on the method */
     val annotations: List<String> = emptyList(),
 
@@ -101,5 +107,6 @@ data class NodeMetadata(
         if ("TABLE_SCAN_RISK" in warningFlags) add("\u2620 TABLE SCAN!")
         if ("CASCADE_OPERATION" in warningFlags) add("CASCADE")
         if ("EARLY_INSERT_LOCK" in warningFlags) add("\u26A1 EARLY LOCK")
+        if (isEventPublisher) add("[EVENT PUB 📤]")
     }
 }

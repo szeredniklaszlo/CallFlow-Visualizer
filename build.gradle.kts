@@ -5,7 +5,7 @@ plugins {
 }
 
 group = "com.callflow"
-version = "1.0.5-X"
+version = "1.0.6-X"
 
 // Semantic Versioning: MAJOR.MINOR.PATCH
 // - MAJOR: 호환성 깨지는 변경
